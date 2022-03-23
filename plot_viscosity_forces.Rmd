@@ -1,0 +1,379 @@
+---
+title: "R Notebook"
+output:
+  html_document:
+    df_print: paged
+---
+
+```{r setup}
+library(tidyverse)
+library(lubridate)
+library(ggdist)
+#library(ggsignif)
+library(ggpubr)
+library(rstatix)
+library(performance)
+library(lme4)
+library(lmerTest)
+library(report)
+library(emmeans)
+library(broom)
+library(car)
+library(patchwork)
+library(here)
+```
+
+```{r}
+kinematicsdata <- read_csv(here('Viscositykinematicscorr.csv')) %>%
+  rename(indiv = Lamprey,
+         trial = Trial,
+         viscosity.cP = `Viscosity (cP)`,
+         peaktime.s = `PeakTime(s)`,
+         speed.mms = `Speed(mm/s)`,
+         accel.mms2 = `Accel(mm/s^2)`,
+         pathangle.deg = `PathAng(deg)`,
+         pathcurve.invmm = `PathCurve(1/mm)`,
+         freq.hz = `BeatFreq(Hz)`,
+         amp.head.mm = `HeadAmp(mm)`,
+         amp.tail.mm = `TailAmp(mm)`,
+         amp.peak.mm = `PeakAmp(mm)`,
+         amp.peak.loc.pct = `PeakAmpPos(%)`,
+         wavelength.mm = `WaveLen(mm)`,
+         wavespeed.mms = `WaveVel(mm/s)`,
+         len.mm = `Length (mm)`,
+         slip = Slip,
+         stridelength = Stride,
+         wavelength = Wavelength) %>%
+  filter(!is.na(viscosity.cP)) %>%
+  mutate(indiv = factor(indiv),
+         viscosity.cP = factor(viscosity.cP))
+```
+
+```{r}
+kinematicsdata <-
+  kinematicsdata %>%
+  mutate(speed.Ls = speed.mms / len.mm,
+         amp.Ls = amp.tail.mm / len.mm,
+         wavespeed.Ls = wavespeed.mms / len.mm,
+         wavelength.L = wavelength.mm / len.mm,
+         amp.head.L = amp.head.mm / len.mm,
+         amp.tail.L = amp.tail.mm / len.mm)
+```
+
+```{r}
+rho <- 1000   # kg/m^3
+```
+
+```{r}
+forcedata <-
+  kinematicsdata %>%
+  mutate(viscosity = fct_recode(viscosity.cP, '6' = '10'),
+         viscosity.cP = case_when(viscosity == '1'  ~  1,
+                                  viscosity == '6'  ~  6,
+                                  viscosity == '20'  ~  20)) %>%
+  select(indiv, trial, viscosity, len.mm, viscosity.cP, peaktime.s, speed.mms,
+         amp.Ls)
+```
+
+```{r}
+tailveldata <- read_csv('tailveldata.csv')
+tailveldata
+```
+
+```{r}
+tailveldata <-
+  tailveldata %>%
+  mutate(trial = str_extract(filename, '.*(?=-midline)'))
+```
+
+```{r}
+tailveldata %>%
+  filter(trial == 'lamprey5-1-corr')
+```
+```{r}
+source('fuzzy_time_match.R')
+```
+
+```{r}
+forcedata2 <-
+  forcedata %>%
+#  filter(trial %in% c('lamprey5-1-corr', 'lamprey5-10-corr')) %>%
+  filter(!is.na(peaktime.s) & !is.na(speed.mms)) %>%
+  select(indiv, trial, viscosity, viscosity.cP, len.mm, peaktime.s, speed.mms,
+         amp.Ls) %>%
+  rename(t = peaktime.s) %>%
+  arrange(trial, t)
+forcedata2
+
+tailveldata2 <-
+  tailveldata %>%
+  select(trial, t, tailspeed.mms, tailangle.deg, tailspeedperp.mms, amp.mm) %>%
+  # filter(trial %in% c('lamprey5-1-corr', 'lamprey5-10-corr')) %>%
+  arrange(trial, t) %>%
+  group_by(trial) %>%
+  group_modify(~ fuzzy_time_match_group(.x, .y, forcedata2)) %>%
+  filter(!is.na(tmatch))
+tailveldata2
+
+forcedata2 <-
+  left_join(forcedata2, tailveldata2, by = c('trial', 't' = 'tmatch')) %>%
+  rename(peaktime.s = t, tailveltime.s = t.y) %>%
+  mutate(height.mm = len.mm/10,
+         Re = rho * tailspeed.mms/1000 * height.mm/1000 / (viscosity.cP * 1e-3),
+         Cd = 1 + sqrt(8 / Re),
+         forceperarea.Pa = 0.5 * rho * Cd * (tailspeedperp.mms/1000)^2,
+         amp.Ls2 = amp.mm / len.mm)
+
+head(forcedata2)
+```
+
+```{r}
+forcedata2 %>%
+  ggplot(aes(x = amp.Ls, y = amp.Ls2, color = viscosity)) +
+  geom_point()
+```
+
+```{r}
+forcedata.bytrial <-
+  forcedata2 %>%
+  group_by(indiv, viscosity, viscosity.cP, trial) %>%
+  summarize(across(c(speed.mms, Re, Cd, tailspeedperp.mms, tailspeed.mms, tailangle.deg, forceperarea.Pa, len.mm), ~mean(., na.rm = TRUE))) %>%
+  ungroup() %>%
+  mutate(height.mm = len.mm/10,
+    Remn = rho * tailspeed.mms/1000 * height.mm/1000 / (viscosity.cP * 1e-3),
+         Cdmn = 1 + sqrt(8 / Remn),
+         forceperarea.Pa = 0.5 * rho * Cd * (tailspeedperp.mms/1000)^2)
+  
+
+head(forcedata.bytrial)
+```
+
+```{r}
+forcedata.bytrial %>%
+  ggplot(aes(x = viscosity, y = tailspeed.mms)) +
+  geom_dots(aes(color = indiv, shape = indiv),
+            group = NA,
+            side = 'both',
+            binwidth = unit(0.025, 'npc'),
+            show.legend = FALSE) +
+  scale_shape_manual(values = c(15,3,6,2,23)) +
+  # scale_y_log10() +
+  #labs(y = 'Re', x = 'Viscosity (cP)') +
+  ylim(c(80, 600)) +
+  theme_bw()
+
+```
+
+```{r}
+forcedata.bytrial %>%
+  ggplot(aes(x = viscosity, y = tailangle.deg)) +
+  geom_dots(aes(color = indiv, shape = indiv),
+            group = NA,
+            side = 'both',
+            binwidth = unit(0.025, 'npc'),
+            show.legend = FALSE) +
+  scale_shape_manual(values = c(15,3,6,2,23)) +
+  # scale_y_log10() +
+  #labs(y = 'Re', x = 'Viscosity (cP)') +
+  ylim(c(50, 180)) +
+  theme_bw()
+
+```
+
+```{r}
+Re_plot <-
+  forcedata.bytrial %>%
+  ggplot(aes(x = viscosity, y = Re)) +
+  geom_beeswarm(aes(color = indiv, shape = indiv), dodge.width = 0.4,
+                show.legend = FALSE, size = 0.5) +
+  scale_shape_manual(values = c(15,3,16,2,18)) +
+  scale_color_brewer(type = 'qual', palette = 'Set1') +
+  scale_y_log10() +
+  labs(y = 'Re', x = 'Viscosity (cP)') +
+  theme_bw() +
+  theme(panel.border = element_blank(), axis.line = element_line())
+
+Re_plot
+```
+
+```{r}
+Cd_plot <-
+  forcedata.bytrial %>%
+  ggplot(aes(x = viscosity, y = Cd)) +
+  geom_beeswarm(aes(color = indiv, shape = indiv), dodge.width = 0.4,
+                show.legend = FALSE, size = 0.5) +
+  scale_shape_manual(values = c(15,3,16,2,18)) +
+  scale_color_brewer(type = 'qual', palette = 'Set1') +
+  labs(y = 'Drag coefficient', x = 'Viscosity (cP)') +
+  theme_bw() +
+  theme(panel.border = element_blank(), axis.line = element_line())
+
+Cd_plot
+```
+
+```{r}
+tailspeed_plot <-
+  forcedata.bytrial %>%
+  filter(!is.infinite(tailspeedperp.mms)) %>%
+  ggplot(aes(x = viscosity, y = tailspeedperp.mms)) +
+  geom_beeswarm(aes(color = indiv, shape = indiv), dodge.width = 0.4,
+                show.legend = FALSE, size = 0.5) +
+  scale_shape_manual(values = c(15,3,16,2,18)) +
+  scale_color_brewer(type = 'qual', palette = 'Set1') +
+  labs(y = 'Perpendicular tail velocity (mm/s)', x = 'Viscosity (cP)') +
+  theme_bw() +
+  theme(panel.border = element_blank(), axis.line = element_line())
+
+tailspeed_plot
+```
+
+```{r}
+force_plot <-
+  forcedata.bytrial %>%
+  filter(!is.infinite(forceperarea.Pa)) %>%
+  ggplot(aes(x = viscosity, y = forceperarea.Pa)) +
+  geom_beeswarm(aes(color = indiv, shape = indiv), dodge.width = 0.4,
+                show.legend = FALSE, size = 0.5) +
+  scale_shape_manual(values = c(15,3,16,2,18)) +
+  scale_color_brewer(type = 'qual', palette = 'Set1') +
+  labs(y = 'Tail force per area (Pa)', x = 'Viscosity (cP)') +
+  theme_bw() +
+  theme(panel.border = element_blank(), axis.line = element_line())
+
+force_plot
+```
+
+
+```{r}
+forcedata.long <-
+  forcedata.bytrial %>%
+  select(indiv, viscosity, trial, Re, Cd, tailspeedperp.mms, forceperarea.Pa) %>%
+  pivot_longer(cols = c(Re, Cd, tailspeedperp.mms, forceperarea.Pa), names_to = "param")
+```
+
+```{r}
+forcedata.long %>%
+  ggplot(aes(x = viscosity, y = value)) +
+  geom_quasirandom() +
+  facet_wrap(~ param, scales = 'free')
+```
+
+
+```{r}
+forcemodels <-
+  forcedata.long %>%
+  group_by(param) %>%
+  nest() %>%
+  mutate(model = purrr::map(data, ~ lmer(value ~ viscosity + (1 | indiv),
+                                         data = ., REML = TRUE, na.action = na.omit)),
+         anova = purrr::map(model, ~ tidy(Anova(., test = 'F'))),
+         pairs = purrr::map(model, ~ tidy(pairs(emmeans(., specs = ~viscosity)))))
+```
+
+```{r}
+forcestats <-
+  forcemodels %>%
+  unnest(anova) %>%
+  select(-term) %>%
+  rename(Fstat = statistic,
+         Fdf1 = df,
+         Fdf2 = Df.res,
+         Fp = p.value) %>%
+  select(-data, -model) %>%
+  unnest(pairs) %>%
+  separate(contrast, into = c("group1", "group2")) %>%
+  mutate(p.format = p_format(adj.p.value, accuracy = 0.001)) %>%
+  rename(p.adj = adj.p.value) %>%
+  # filter(group1 == 1) %>%
+  # mutate(group1 = 'all') %>%
+  add_significance('p.adj')
+  #select(-term, -null.value, -estimate, -std.error, -df, -statistic) %>%
+  #pivot_wider(names_from = contrast, values_from = adj.p.value)
+
+forcestats
+```
+
+```{r}
+forcemeans <-
+  forcemodels %>%
+  mutate(means = purrr::map(model, ~ tidy(emmeans(., specs = ~viscosity)))) %>%
+  select(param, means) %>%
+  unnest(means)
+
+forcemeans
+```
+```{r}
+Re_plot_stat <-
+  Re_plot +
+  geom_pointrange(data = filter(forcemeans, param == 'Re'),
+                  aes(x = viscosity, y = estimate, ymin = estimate - std.error, ymax = estimate + std.error),
+                  shape = 4, size = 0.5) +
+  geom_line(data = filter(forcemeans, param == 'Re'),
+                  aes(x = viscosity, y = estimate, group = 1)) +
+  stat_pvalue_manual(data = filter(forcestats, param == 'Re'),
+                     label = '{p.format}{p.adj.signif}',
+                     x.position = 'viscosity',
+                     y.position = 4.2)
+
+Re_plot_stat
+```
+
+```{r}
+Cd_plot_stat <-
+  Cd_plot +
+  geom_pointrange(data = filter(forcemeans, param == 'Cd'),
+                  aes(x = viscosity, y = estimate, ymin = estimate - std.error, ymax = estimate + std.error),
+                  shape = 4, size = 0.5) +
+  geom_line(data = filter(forcemeans, param == 'Cd'),
+                  aes(x = viscosity, y = estimate, group = 1)) +
+  stat_pvalue_manual(data = filter(forcestats, param == 'Cd'),
+                     label = '{p.format}{p.adj.signif}',
+                     x.position = 'viscosity',
+                     y.position = 1.36)
+
+Cd_plot_stat
+```
+
+```{r}
+tailspeed_plot_stat <-
+  tailspeed_plot +
+  geom_pointrange(data = filter(forcemeans, param == 'tailspeedperp.mms'),
+                  aes(x = viscosity, y = estimate, ymin = estimate - std.error, ymax = estimate + std.error),
+                  shape = 4, size = 0.5) +
+  geom_line(data = filter(forcemeans, param == 'tailspeedperp.mms'),
+                  aes(x = viscosity, y = estimate, group = 1)) +
+  stat_pvalue_manual(data = filter(forcestats, param == 'tailspeedperp.mms'),
+                     label = '{p.format}{p.adj.signif}',
+                     x.position = 'viscosity',
+                     y.position = 180,
+                     hide.ns = TRUE)
+
+tailspeed_plot_stat
+```
+
+
+```{r}
+force_plot_stat <-
+  force_plot +
+  geom_pointrange(data = filter(forcemeans, param == 'forceperarea.Pa'),
+                  aes(x = viscosity, y = estimate, ymin = estimate - std.error, ymax = estimate + std.error),
+                  shape = 4, size = 0.5) +
+  geom_line(data = filter(forcemeans, param == 'forceperarea.Pa'),
+                  aes(x = viscosity, y = estimate, group = 1)) +
+  stat_pvalue_manual(data = filter(forcestats, param == 'forceperarea.Pa'),
+                     label = '{p.format}{p.adj.signif}',
+                     x.position = 'viscosity',
+                     y.position = 20,
+                     hide.ns = TRUE)
+
+force_plot_stat
+```
+
+```{r}
+Re_plot_stat + Cd_plot_stat + tailspeed_plot_stat + force_plot_stat +
+  plot_annotation(tag_levels = 'A')
+```
+```{r}
+ggsave('force_plot.pdf', width = 6, height = 4.5)
+```
+

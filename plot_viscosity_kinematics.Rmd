@@ -1,6 +1,8 @@
 ---
 title: "R Notebook"
-output: html_notebook
+output:
+  html_document:
+    df_print: paged
 ---
 
 ```{r setup}
@@ -138,7 +140,7 @@ kinematicsmodels <-
   kinematicsdata_long %>%
   group_by(param) %>%
   nest() %>%
-  mutate(model = purrr::map(data, ~ lmer(value ~ viscosity + (1 + viscosity | indiv),
+  mutate(model = purrr::map(data, ~ lmer(value ~ viscosity + (1 | indiv),
                                          data = ., REML = TRUE, na.action = na.omit)),
          anova = purrr::map(model, ~ tidy(Anova(., test = 'F'))),
          pairs = purrr::map(model, ~ tidy(pairs(emmeans(., specs = ~viscosity)))))
@@ -169,6 +171,14 @@ kinematicsmeans <-
 
 kinematicsmeans
 ```
+
+```{r}
+kinematicsmodels %>%
+  filter(param == 'comspeed') %>%
+  pull(model)
+```
+
+
 ```{r}
 ybar <- 3.4
 textoff <- 0.05
@@ -249,317 +259,5 @@ kinematicsplot
 
 ```{r}
 ggsave('kinematics.pdf', kinematicsplot, width = 6, height = 4)
-```
-
-```{r}
-ggplot(kinematicsdatasummary, aes(x = viscosity, y = Re)) +
-  # geom_boxplot(outlier.shape = NA) +
-  geom_beeswarm(aes(color = indiv, shape = indiv), dodge.width = 0.6) +
-  scale_y_log10() +
-  scale_shape_manual(values = c(15,3,16,2,18)) +
-  stat_summary(fun.data = 'mean_sdl', fun.args = list(mult=1), 
-               size=1, shape = 4) +
-  labs(y = 'Speed (L/s)', x = 'Reynolds number') +
-  theme_bw()
-```
-```{r}
-kinematicsdata <- read_csv(here('Viscositykinematicscorr.csv')) %>%
-  rename(indiv = Lamprey,
-         trial = Trial,
-         viscosity.cP = `Viscosity (cP)`,
-         peaktime.s = `PeakTime(s)`,
-         speed.mms = `Speed(mm/s)`,
-         accel.mms2 = `Accel(mm/s^2)`,
-         pathangle.deg = `PathAng(deg)`,
-         pathcurve.invmm = `PathCurve(1/mm)`,
-         freq.hz = `BeatFreq(Hz)`,
-         amp.head.mm = `HeadAmp(mm)`,
-         amp.tail.mm = `TailAmp(mm)`,
-         amp.peak.mm = `PeakAmp(mm)`,
-         amp.peak.loc.pct = `PeakAmpPos(%)`,
-         wavelength.mm = `WaveLen(mm)`,
-         wavespeed.mms = `WaveVel(mm/s)`,
-         len.mm = `Length (mm)`,
-         slip = Slip,
-         stridelength = Stride,
-         wavelength = Wavelength) %>%
-  filter(!is.na(viscosity.cP)) %>%
-  mutate(indiv = factor(indiv),
-         viscosity.cP = factor(viscosity.cP))
-```
-
-```{r}
-kinematicsdata <-
-  kinematicsdata %>%
-  mutate(speed = speed.mms / len.mm,
-         amp = amp.tail.mm / len.mm,
-         wavespeed = wavespeed.mms / len.mm)
-```
-
-```{r}
-kinematicsdata %>%
-  mutate(speed = speed.mms / len.mm) %>%
-  ggplot(aes(x = peaktime.s, y = speed, color = indiv, group = trial)) +
-  geom_path() +
-  facet_grid(viscosity.cP ~ ., scales = 'free')
-```
-```{r}
-kinematicsdata %>%
-  ggplot(aes(x = freq.hz, speed, color = indiv)) +
-  geom_point() +
-  facet_grid(viscosity.cP ~ ., scales = 'free') +
-  xlim(c(0, 10))
-```
-```{r}
-kinematicsdata %>%
-  ggplot(aes(x = speed, y = stridelength)) +
-  geom_point(aes(color = indiv)) +
-  facet_grid(viscosity.cP ~ indiv)
-```
-
-```{r}
-midlinefiles <- list.files('/Users/etytel01/Documents/2022/Viscosity/rawdata2', pattern = 'lamprey.*-midline\\.csv', 
-                           full.names = TRUE, recursive = TRUE)
-```
-
-```{r}
-split_midline_names <- function(df) {
-  m <- str_match(df$filename, '(\\d{4}-\\d{2}-\\d{2})/lamprey(\\d+)-(\\d+)')
-  m <- as_tibble(m[,2:4], .name_repair = 'minimal')
-  colnames(m) <- c('date', 'indiv','trial')
-  
-  bind_cols(df, m)
-}
-```
-
-```{r eval=FALSE}
-midlines <- tibble(filename = midlinefiles) %>%
-  group_modify(~ split_midline_names(.x)) %>%
-  mutate(data = map(filename, ~read_csv(.x, show_col_types = FALSE)))
-
-midlines <-
-  midlines %>%
-  mutate(filename = basename(filename),
-         filename = factor(filename),
-         indiv = factor(indiv),
-         trial = as.numeric(trial),
-         date = ymd(date))
-
-midlines <- 
-  midlines %>%
-  unnest(data) %>%
-  filter(!is.na(mxmm))
-
-midlines <-
-  midlines %>%
-  left_join(
-    kinematicsdatasummary %>%
-    filter(!is.na(len)) %>%
-    distinct(indiv,trial,viscosity,len),
-    by = c("indiv", "trial"))
-
-midlines <-
-  midlines %>%
-  distinct(indiv,trial,point,frame, .keep_all = TRUE)
-
-write_hdf5(midlines, here('midlines_all.h5'))
-```
-
-
-```{r}
-midlines <- read_hdf5(here('midlines_all.h5')) %>%
-  mutate(date = as_date(date))
-```
-
-```{r}
-midlines %>%
-  group_by(indiv, viscosity, trial) %>%
-  tally() %>%
-  tally()
-```
-
-```{r}
-midlines %>%
-  filter(indiv == 8 & trial == 7) %>%
-  ggplot(aes(x = mxmm, y = mymm, group = frame)) +
-  geom_path() +
-  geom_point(data = ~ filter(.x, point == 20), color = 'red') +
-  coord_fixed()
-```
-
-```{r}
-midlines %>%
-  filter(indiv == 8 & trial == 34) %>%
-  ggplot(aes(x = mxmm, y = mymm, group = frame)) +
-  geom_path() +
-  geom_point(data = ~ filter(.x, point == 20), color = 'red') +
-  coord_fixed()
-```
-
-
-
-```{r eval=FALSE}
-kinematicsdata2 <- midlines %>%
-  arrange(indiv, trial, frame) %>%
-  mutate(indiv = factor(indiv),
-         trial = factor(trial)) %>%
-  rename(xmm = mxmm, ymm = mymm,
-         bodyparts = point) %>%
-  mutate(bodyparts = factor(bodyparts)) %>%
-  group_by(indiv, trial) %>%
-  group_modify(~ get_all_kinematics(.x, .y, width, smooth.excursion = 0.2, min.peak.gap = 0.01, min.peak.size = 0.01))
-
-write_hdf5(kinematicsdata2, here('midlines_all_kinematics.h5'))
-```
-
-```{r}
-kinematicsdata2 <- read_hdf5(here('midlines_all_kinematics.h5')) %>%
-  mutate(date = as_date(date)) %>%
-  select(-contains('nextseg'),
-         -cycle_step)
-```
-
-
-```{r}
-tailbeatdata <-
-  kinematicsdata2 %>%
-  arrange(indiv, trial, frame, bodyparts) %>%
-  group_by(indiv, len, trial, viscosity, frame) %>%
-  summarize(across(c(swimvels, freq, wavespeed, wavelength), ~ mean(.x, na.rm = TRUE)),
-         across(c(amp, cycle), ~ last(na.omit(.x)))) %>%
-  group_by(indiv, len, trial, viscosity, cycle) %>%
-  summarize(across(c(swimvels, freq, wavespeed, wavelength, amp), ~ mean(.x, na.rm = TRUE)))
-           
-```
-
-```{r}
-tailbeatdata %>%
-  group_by(indiv, viscosity, trial) %>%
-  summarise(swimvel = mean(swimvels / len, na.rm = TRUE)) %>%
-  ggplot(aes(x = viscosity, y = swimvel)) +
-  geom_boxplot(outlier.shape = NA) +
-  geom_beeswarm(aes(color = indiv, shape = indiv), dodge.width = 0.6)
-```
-
-```{r}
-kinematicsdata2 %>%
-  filter(indiv == '8' & trial %in% c( '34')) %>%
-  filter(!is.na(phase)) %>%
-  arrange(indiv, trial, frame) %>%
-  group_by(indiv, trial, floor(phase)) %>%
-  mutate(comxcycle = first(na.omit(comx)),
-         comycycle = first(na.omit(comy))) %>%
-  mutate(phase2 = round((phase %% 1) * 16) / 16,
-         xctr = xmm - comx,
-         yctr = ymm - comy,
-         swimdist = (comx - comxcycle) * swimdirx + (comy - comycycle) * swimdiry,
-         xorient = xctr * bodyaxisx + yctr * bodyaxisy + swimdist,
-         yorient = -xctr * bodyaxisy + yctr * bodyaxisx) %>%
-  distinct(indiv, trial, viscosity, bodyparts, phase2, .keep_all = TRUE) %>%
-  ggplot(aes(x = xorient, y = yorient, color = phase2)) +
-  #geom_path(aes(group = factor(phase2)), show.legend = FALSE) +
-  geom_path(aes(group = bodyparts), data = ~ filter(.x, bodyparts %in% c(1, 20))) +
-  geom_hline(yintercept = 0, color = 'black') +
-  coord_equal() +
-  facet_wrap(~ floor(phase))
-
-```
-
-```{r}
-kinematicsdata2 %>%
-  filter(indiv == '8' & viscosity == '10') %>%
-  ggplot(aes(x = xmm, y = ymm)) +
-  geom_path(aes(group = frame)) +
-  facet_wrap(~ trial)
-```
-
-```{r}
-kinematicsdata2 %>%
-  filter(indiv == '8' & trial %in% c( '14')) %>%
-  filter(!is.na(phase)) %>%
-  arrange(indiv, trial, frame) %>%
-  group_by(indiv, trial, floor(phase)) %>%
-  mutate(comxcycle = first(na.omit(comx)),
-         comycycle = first(na.omit(comy))) %>%
-  mutate(phase2 = round((phase %% 1) * 16) / 16,
-         xctr = xmm - comx,
-         yctr = ymm - comy,
-         swimdist = (comx - comxcycle) * swimdirx + (comy - comycycle) * swimdiry,
-         xorient = xctr * bodyaxisx + yctr * bodyaxisy + swimdist,
-         yorient = -xctr * bodyaxisy + yctr * bodyaxisx) %>%
-  distinct(indiv, trial, viscosity, bodyparts, phase2, .keep_all = TRUE) %>%
-  ggplot(aes(x = xorient, y = yorient, color = phase2)) +
-  #geom_path(aes(group = factor(phase2)), show.legend = FALSE) +
-  geom_path(aes(group = bodyparts), data = ~ filter(.x, bodyparts %in% c(1, 20))) +
-  geom_hline(yintercept = 0) +
-  coord_equal() +
-  facet_wrap(~ floor(phase))
-```
-
-```{r}
-kinematicsdata2 %>%
-  filter(indiv == '8' & trial %in% c( '7')) %>%
-  filter(!is.na(phase)) %>%
-  arrange(indiv, trial, frame) %>%
-  group_by(indiv, trial, floor(phase)) %>%
-  mutate(comxcycle = first(na.omit(comx)),
-         comycycle = first(na.omit(comy))) %>%
-  mutate(phase2 = round((phase %% 1) * 16) / 16,
-         xctr = xmm - comx,
-         yctr = ymm - comy,
-         swimdist = (comx - comxcycle) * swimdirx + (comy - comycycle) * swimdiry,
-         xorient = xctr * bodyaxisx + yctr * bodyaxisy + swimdist,
-         yorient = -xctr * bodyaxisy + yctr * bodyaxisx) %>%
-  distinct(indiv, trial, viscosity, bodyparts, phase2, .keep_all = TRUE) %>%
-  ggplot(aes(x = xorient, y = yorient, color = phase2)) +
-  #geom_path(aes(group = factor(phase2)), show.legend = FALSE) +
-  geom_path(aes(group = bodyparts), data = ~ filter(.x, bodyparts %in% c(1, 20))) +
-  geom_hline(yintercept = 0) +
-  coord_equal() +
-  facet_wrap(~ floor(phase))
-
-```
-
-
-```{r}
-kinematicsdata2 %>%
-  filter(indiv == '8' & trial %in% c('7', '14', '34')) %>%
-  filter(!is.na(phase)) %>%
-  arrange(indiv, trial, frame) %>%
-  group_by(indiv, trial, floor(phase)) %>%
-  mutate(comxcycle = first(na.omit(comx)),
-         comycycle = first(na.omit(comy))) %>%
-  mutate(phase2 = phase %% 1,
-         xctr = xmm - comx,
-         yctr = ymm - comy,
-         swimdist = (comx - comxcycle) * swimdirx + (comy - comycycle) * swimdiry,
-         xorient = xctr * bodyaxisx + yctr * bodyaxisy + swimdist,
-         yorient = -xctr * bodyaxisy + yctr * bodyaxisx) %>%
-  distinct(indiv, trial, viscosity, bodyparts, phase2, .keep_all = TRUE) %>%
-  filter(floor(phase) == case_when(trial == '7'  ~  4,
-                                   trial == '14'  ~  5,
-                                   trial == '34'  ~  3)) %>%
-  ggplot(aes(x = xorient, y = yorient, color = phase2)) +
-  geom_path(data = ~ filter(.x, frame %% 2 == 0),
-            aes(group = factor(phase2)), show.legend = FALSE) +
-  geom_path(aes(group = bodyparts), data = ~ filter(.x, bodyparts %in% c(1, 20)), color = 'gray') +
-  geom_point(data = ~ filter(.x, bodyparts %in% c(1, 20) & frame %% 2 == 0),
-             aes(group = bodyparts), show.legend = FALSE) +
-  coord_equal() +
-  facet_grid(viscosity ~ .) +
-  theme_light()
-
-```
-
-```{r}
-kinematicsdata2 %>%
-  group_by(viscosity, bodyparts) %>%
-  summarise(excmn = mean(abs(exc) / len, na.rm = TRUE),
-            excsd = sd(abs(exc) / len, na.rm = TRUE),
-            excse = excsd / sqrt(sum(!is.na(exc))),
-            s = mean(s / len, na.rm = TRUE)) %>%
-  ggplot(aes(x = s, y = excmn, color = viscosity, fill = viscosity)) +
-  geom_ribbon(aes(ymin = excmn - excse, ymax = excmn + excse), alpha = 0.5) +
-  geom_path()
 ```
 

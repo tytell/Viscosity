@@ -1,0 +1,337 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r setup}
+library(tidyverse)
+library(lubridate)
+library(ggdist)
+library(patchwork)
+library(here)
+```
+
+```{r}
+source('process_midlines.R')
+```
+
+```{r}
+width <-
+  read_csv(here('fishwidth.csv')) %>%
+  pull(ammowidth)
+```
+
+```{r}
+midlinefiles <- list.files('/Users/etytel01/Documents/2022/Viscosity/rawdata2', pattern = 'lamprey.*-midline\\.csv', 
+                           full.names = TRUE, recursive = TRUE)
+```
+
+```{r}
+split_midline_names <- function(df) {
+  m <- str_match(df$filename, '(\\d{4}-\\d{2}-\\d{2})/lamprey(\\d+)-(\\d+[a-f]?)')
+  m <- as_tibble(m[,2:4], .name_repair = 'minimal')
+  colnames(m) <- c('date', 'indiv','trial')
+  
+  bind_cols(df, m)
+}
+```
+
+```{r}
+kinematicsdata <- read_csv(here('Viscositykinematicscorr.csv')) %>%
+  rename(indiv = Lamprey,
+         trial = Trial,
+         viscosity.cP = `Viscosity (cP)`,
+         peaktime.s = `PeakTime(s)`,
+         speed.mms = `Speed(mm/s)`,
+         accel.mms2 = `Accel(mm/s^2)`,
+         pathangle.deg = `PathAng(deg)`,
+         pathcurve.invmm = `PathCurve(1/mm)`,
+         freq.hz = `BeatFreq(Hz)`,
+         amp.head.mm = `HeadAmp(mm)`,
+         amp.tail.mm = `TailAmp(mm)`,
+         amp.peak.mm = `PeakAmp(mm)`,
+         amp.peak.loc.pct = `PeakAmpPos(%)`,
+         wavelength.mm = `WaveLen(mm)`,
+         wavespeed.mms = `WaveVel(mm/s)`,
+         len.mm = `Length (mm)`,
+         slip = Slip,
+         stridelength = Stride,
+         wavelength = Wavelength) %>%
+  filter(!is.na(viscosity.cP)) %>%
+  mutate(indiv = factor(indiv),
+         viscosity.cP = factor(viscosity.cP))
+```
+```{r}
+kinematicsdatasummary <-
+  kinematicsdata %>%
+  filter(!is.na(viscosity.cP)) %>%
+  distinct(indiv, trial, viscosity.cP, len.mm) %>%
+  # filter(!is.na(len.mm)) %>%
+  mutate(trial.orig = trial,
+         trial = str_extract(trial, '(?<=-)\\d+[a-f]?(?=(-|$))'),
+         indiv = str_extract(indiv, '(?<=Lamprey )\\d+'),
+         indiv = factor(indiv))
+
+head(kinematicsdatasummary)
+```
+
+```{r eval=FALSE}
+midlines <- tibble(filename = midlinefiles) %>%
+  group_modify(~ split_midline_names(.x)) %>%
+  mutate(data = map(filename, ~read_csv(.x, show_col_types = FALSE)))
+
+midlines <-
+  midlines %>%
+  mutate(filename = basename(filename),
+         filename = factor(filename),
+         indiv = factor(indiv),
+         date = ymd(date))
+
+midlines <- 
+  midlines %>%
+  unnest(data) %>%
+  filter(!is.na(mxmm))
+
+midlines <-
+  midlines %>%
+  left_join(
+    kinematicsdatasummary,
+    by = c("indiv", "trial"))
+
+midlines <-
+  midlines %>%
+  distinct(indiv,trial,point,frame, .keep_all = TRUE) %>%
+  filter(!is.na(viscosity.cP)) %>%
+  select(-trial.orig)
+
+write_hdf5(midlines, here('midlines_all.h5'))
+```
+
+
+```{r}
+midlines <- read_hdf5(here('midlines_all.h5')) %>%
+  mutate(date = as_date(date))
+```
+
+```{r}
+midlines %>%
+  group_by(indiv, viscosity.cP, trial) %>%
+  tally() %>%
+  tally()
+```
+
+```{r}
+midlines %>%
+  group_by(filename) %>%
+  filter(all(is.na(viscosity.cP))) %>%
+  distinct(filename)
+```
+
+```{r}
+midlines %>%
+  filter(indiv == 8 & trial == 7) %>%
+  ggplot(aes(x = mxmm, y = mymm, group = frame)) +
+  geom_path() +
+  geom_point(data = ~ filter(.x, point == 20), color = 'red') +
+  coord_fixed()
+```
+
+```{r}
+midlines %>%
+  filter(indiv == 8 & trial == 34) %>%
+  ggplot(aes(x = mxmm, y = mymm, group = frame)) +
+  geom_path() +
+  geom_point(data = ~ filter(.x, point == 20), color = 'red') +
+  coord_fixed()
+```
+
+
+
+```{r eval=FALSE}
+kinematicsdata2 <- midlines %>%
+  arrange(indiv, trial, frame) %>%
+  mutate(indiv = factor(indiv),
+         trial = factor(trial)) %>%
+  rename(xmm = mxmm, ymm = mymm,
+         bodyparts = point) %>%
+  mutate(bodyparts = factor(bodyparts)) %>%
+  group_by(indiv, trial) %>%
+  group_modify(~ get_all_kinematics(.x, .y, width, smooth.excursion = 0.2, min.peak.gap = 0.01, min.peak.size = 0.01)) %>%
+  # for some unclear reason, this gives sensible results if I put it here, but not if it's in get_all_kinematics
+  mutate(wavespeed = (snextseg - s)/(tpnextseg - tp))
+
+
+write_hdf5(kinematicsdata2, here('midlines_all_kinematics.h5'))
+```
+
+```{r}
+kinematicsdata2 <- read_hdf5(here('midlines_all_kinematics.h5')) %>%
+  mutate(date = as_date(date)) %>%
+  mutate(wavespeed = (snextseg - s)/(tpnextseg - tp))
+#  select(-contains('nextseg'),
+#         -cycle_step)
+```
+
+```{r}
+head(kinematicsdata2)
+```
+
+```{r}
+tailbeatdata <-
+  kinematicsdata2 %>%
+  arrange(indiv, trial, frame, bodyparts) %>%
+  mutate(amp = abs(amp)) %>%
+  group_by(indiv, len.mm, trial, viscosity.cP, frame) %>%
+  mutate(wavespeed = if_else(bodyparts %in% c('15','16','17','18','19','20'), wavespeed, NA_real_)) %>%
+  summarize(across(c(swimvels, freq, wavespeed, wavelength), ~ mean(.x, na.rm = TRUE)),
+         across(c(amp, cycle), ~ last(na.omit(.x))),
+         amp.head.mm = first(na.omit(amp))) %>%
+  group_by(indiv, len.mm, trial, viscosity.cP, cycle) %>%
+  summarize(across(c(swimvels, freq, wavespeed, wavelength, amp), ~ mean(.x, na.rm = TRUE))) %>%
+  rename(speed.mms = swimvels,
+         freq.hz = freq,
+         amp.tail.mm = amp,
+         wavelength.mm = wavelength,
+         wavespeed.mms = wavespeed) %>%
+  ungroup()
+```
+
+```{r}
+oldkinematics <-
+  kinematicsdata %>%
+  group_by(indiv, len.mm, trial, viscosity.cP) %>%
+  summarize(across(c(speed.mms, freq.hz, wavespeed.mms, wavelength.mm, amp.tail.mm),
+                   ~ mean(.x, na.rm = TRUE))) %>%
+  mutate(indiv = str_extract(as.character(indiv), '(?<=Lamprey )\\d+'),
+         trial = str_extract(trial, '(?<=-)\\d+[a-f]?(?=(-|$))'),
+         indiv = factor(indiv),
+         trial = factor(trial),
+         viscosity.cP = as.character(viscosity.cP),
+         viscosity.cP = as.numeric(viscosity.cP))
+head(oldkinematics)
+```
+
+```{r}
+newkinematics <-
+  tailbeatdata %>%
+  group_by(indiv, len.mm, trial, viscosity.cP) %>%
+  summarize(across(c(speed.mms, freq.hz, wavespeed.mms, wavelength.mm, amp.tail.mm),
+                   ~ mean(.x, na.rm = TRUE)))
+head(newkinematics)
+```
+
+```{r}
+comparekinematics <-
+  full_join(oldkinematics, newkinematics, by = c('indiv', 'trial', 'len.mm', 'viscosity.cP'),
+          suffix = c('_old','_new'))
+```
+
+```{r}
+comparekinematics_long <-
+  comparekinematics %>%
+  pivot_longer(cols = -c(indiv, len.mm, trial, viscosity.cP),
+               names_to = c('var', '.value'),
+               names_sep = '_')
+```
+
+```{r}
+head(comparekinematics_long)
+```
+
+```{r}
+comparekinematics_long %>%
+  filter(var != 'wavespeed.mms' | (old > 0 & new > 0)) %>%
+  ggplot(aes(x = old, y = new, color = viscosity.cP)) +
+  geom_point() +
+  geom_abline(slope = 1, intercept = 0) +
+  facet_wrap(~ var, scales = 'free')
+```
+
+```{r}
+comparekinematics %>%
+  ungroup() %>%
+  filter((viscosity.cP == 1 | viscosity.cP == 20) & 
+         (amp.tail.mm_new - amp.tail.mm_old < -5)) %>%
+           distinct(indiv, trial, viscosity.cP)
+```
+```{r}
+kinematicsdata2 %>%
+  filter(indiv == 8 & trial == '28') %>%
+  get_amplitudes() %>%
+  select(starts_with('amp'))
+```
+
+
+```{r}
+p1 <-
+  kinematicsdata2 %>%
+  filter(indiv == 8 & trial == '28') %>%
+  ggplot(aes(x = xmm, y = ymm)) +
+  geom_path(aes(group = frame)) +
+  coord_equal()
+
+p2 <-
+  kinematicsdata2 %>%
+  filter(indiv == 8 & trial == '28') %>%
+  ggplot(aes(x = s, y = exc)) +
+  geom_path(aes(group = frame)) +
+  coord_equal()
+
+p3 <-
+  comparekinematics %>%
+  filter(indiv == 8 & trial == '28') %>%
+  select(starts_with('amp'))
+
+p1 / p2
+
+p3
+
+```
+
+```{r}
+kinematicsdata2 %>%
+  filter(indiv == 8 & trial == '28') %>%
+  filter(bodyparts == '20') %>%
+  ggplot(aes(x = t, y = exc)) +
+  geom_line()
+
+```
+
+```{r}
+kinematicsdata2 %>%
+  filter(indiv == 8 & trial == '2') %>%
+  #filter(bodyparts == '20') %>%
+  get_amplitudes() %>%
+  select(c(starts_with('amp'), pk, frame, bodyparts))
+```
+
+```{r}
+kinematicsdata2 %>%
+  filter(indiv == 8 & trial == '28') %>%
+  filter(bodyparts %in% c('19', '20')) %>%
+  ggplot() +
+  geom_line(aes(x = t, y = exc, color = bodyparts)) +
+  geom_point(aes(x = tp, y = peaksize * len.mm, color = bodyparts))
+```
+
+```{r}
+q <- midlines %>%
+  filter(indiv == 8 & trial %in% c('2','28')) %>%
+  arrange(indiv, trial, frame) %>%
+  mutate(indiv = factor(indiv),
+         trial = factor(trial)) %>%
+  rename(xmm = mxmm, ymm = mymm,
+         bodyparts = point) %>%
+  mutate(bodyparts = factor(bodyparts)) %>%
+  group_by(indiv, trial) %>%
+  group_modify(~ get_all_kinematics(.x, .y, width, smooth.excursion = 0.2, min.peak.gap = 0.01, min.peak.size = 0.01))
+```
+
+```{r}
+q %>%
+  select(swimvels, bodyparts, s, wavespeed, tp, tpnext, tpnextseg, snextseg) %>%
+  mutate(wavespeed2 = (snextseg - s)/(tpnextseg - tp)) %>%
+  filter(!is.na(wavespeed)) %>%
+  ggplot(aes(x = wavespeed, y = wavespeed2, color = bodyparts)) +
+  geom_point()
+```

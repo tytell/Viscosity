@@ -1,0 +1,398 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r setup}
+library(tidyverse)
+library(lubridate)
+library(ggdist)
+library(lme4)
+library(lmerTest)
+library(report)
+library(emmeans)
+library(broom)
+library(car)
+library(patchwork)
+library(here)
+```
+
+```{r}
+source('process_midlines.R')
+```
+
+```{r}
+midlines <- read_hdf5(here('midlines_all_kinematics.h5')) %>%
+  mutate(date = as_date(date),
+         viscosity.cP = as.factor(viscosity.cP)) %>%
+  filter(!is.na(viscosity.cP))
+```
+
+```{r}
+midlines %>%
+  filter(indiv == 8 & trial == 7) %>%
+  ggplot(aes(x = xmm, y = ymm, group = frame)) +
+  geom_path() +
+  geom_point(data = ~ filter(.x, bodyparts == '20'), color = 'red') +
+  coord_fixed()
+```
+
+```{r}
+midlines %>%
+  filter(indiv == 8 & trial == 34) %>%
+  ggplot(aes(x = xmm, y = ymm, group = frame)) +
+  geom_path() +
+  geom_point(data = ~ filter(.x, bodyparts == '20'), color = 'red') +
+  coord_fixed()
+```
+
+
+```{r}
+tailbeatdata <-
+  midlines %>%
+  arrange(indiv, trial, frame, bodyparts) %>%
+  group_by(indiv, len.mm, trial, viscosity.cP, frame) %>%
+  summarize(across(c(swimvels, freq, wavespeed, wavelength), ~ mean(.x, na.rm = TRUE)),
+         across(c(amp, cycle), ~ last(na.omit(.x)))) %>%
+  group_by(indiv, len.mm, trial, viscosity.cP, cycle) %>%
+  summarize(across(c(swimvels, freq, wavespeed, wavelength, amp), ~ mean(.x, na.rm = TRUE)))
+           
+```
+
+```{r}
+tailbeatdata %>%
+  group_by(indiv, viscosity.cP, trial) %>%
+  summarise(swimvel = mean(swimvels / len.mm, na.rm = TRUE)) %>%
+  ggplot(aes(x = viscosity.cP, y = swimvel)) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_dots(aes(color = indiv), 
+            position = 'dodge',
+            width = 0.8,
+            side = 'both',
+            layout = 'swarm',
+            show.legend = FALSE)
+
+```
+
+```{r}
+midlines %>%
+  filter(indiv == '8' & trial %in% c( '34')) %>%
+  filter(!is.na(phase)) %>%
+  arrange(indiv, trial, frame) %>%
+  group_by(indiv, trial, floor(phase)) %>%
+  mutate(comxcycle = first(na.omit(comx)),
+         comycycle = first(na.omit(comy))) %>%
+  mutate(phase2 = round((phase %% 1) * 16) / 16,
+         xctr = xmm - comx,
+         yctr = ymm - comy,
+         swimdist = (comx - comxcycle) * swimdirx + (comy - comycycle) * swimdiry,
+         xorient = xctr * bodyaxisx + yctr * bodyaxisy + swimdist,
+         yorient = -xctr * bodyaxisy + yctr * bodyaxisx) %>%
+  distinct(indiv, trial, viscosity.cP, bodyparts, phase2, .keep_all = TRUE) %>%
+  ggplot(aes(x = xorient, y = yorient, color = phase2)) +
+  #geom_path(aes(group = factor(phase2)), show.legend = FALSE) +
+  geom_path(aes(group = bodyparts), data = ~ filter(.x, bodyparts %in% c(1, 20))) +
+  geom_hline(yintercept = 0, color = 'black') +
+  coord_equal() +
+  facet_wrap(~ floor(phase))
+
+```
+
+```{r}
+midlines %>%
+  filter(indiv == '8' & viscosity.cP == '10') %>%
+  ggplot(aes(x = xmm, y = ymm)) +
+  geom_path(aes(group = frame)) +
+  facet_wrap(~ trial)
+```
+
+```{r}
+midlines %>%
+  filter(indiv == '8' & trial %in% c( '14')) %>%
+  filter(!is.na(phase)) %>%
+  arrange(indiv, trial, frame) %>%
+  group_by(indiv, trial, floor(phase)) %>%
+  mutate(comxcycle = first(na.omit(comx)),
+         comycycle = first(na.omit(comy))) %>%
+  mutate(phase2 = round((phase %% 1) * 16) / 16,
+         xctr = xmm - comx,
+         yctr = ymm - comy,
+         swimdist = (comx - comxcycle) * swimdirx + (comy - comycycle) * swimdiry,
+         xorient = xctr * bodyaxisx + yctr * bodyaxisy + swimdist,
+         yorient = -xctr * bodyaxisy + yctr * bodyaxisx) %>%
+  distinct(indiv, trial, viscosity.cP, bodyparts, phase2, .keep_all = TRUE) %>%
+  ggplot(aes(x = xorient, y = yorient, color = phase2)) +
+  #geom_path(aes(group = factor(phase2)), show.legend = FALSE) +
+  geom_path(aes(group = bodyparts), data = ~ filter(.x, bodyparts %in% c(1, 20))) +
+  geom_hline(yintercept = 0) +
+  coord_equal() +
+  facet_wrap(~ floor(phase))
+```
+
+```{r}
+midlines %>%
+  filter(indiv == '8' & trial %in% c( '7')) %>%
+  filter(!is.na(phase)) %>%
+  arrange(indiv, trial, frame) %>%
+  group_by(indiv, trial, floor(phase)) %>%
+  mutate(comxcycle = first(na.omit(comx)),
+         comycycle = first(na.omit(comy))) %>%
+  mutate(phase2 = round((phase %% 1) * 16) / 16,
+         xctr = xmm - comx,
+         yctr = ymm - comy,
+         swimdist = (comx - comxcycle) * swimdirx + (comy - comycycle) * swimdiry,
+         xorient = xctr * bodyaxisx + yctr * bodyaxisy + swimdist,
+         yorient = -xctr * bodyaxisy + yctr * bodyaxisx) %>%
+  distinct(indiv, trial, viscosity.cP, bodyparts, phase2, .keep_all = TRUE) %>%
+  ggplot(aes(x = xorient, y = yorient, color = phase2)) +
+  #geom_path(aes(group = factor(phase2)), show.legend = FALSE) +
+  geom_path(aes(group = bodyparts), data = ~ filter(.x, bodyparts %in% c(1, 20))) +
+  geom_hline(yintercept = 0) +
+  coord_equal() +
+  facet_wrap(~ floor(phase))
+
+```
+
+
+```{r}
+midline_plot <-
+  midlines %>%
+  filter(indiv == '8' & trial %in% c('7', '14', '34')) %>%
+  filter(!is.na(phase)) %>%
+  arrange(indiv, trial, frame) %>%
+  group_by(indiv, trial, floor(phase)) %>%
+  mutate(comxcycle = first(na.omit(comx)),
+         comycycle = first(na.omit(comy))) %>%
+  mutate(phase2 = phase %% 1,
+         xctr = xmm - comx,
+         yctr = ymm - comy,
+         swimdist = (comx - comxcycle) * swimdirx + (comy - comycycle) * swimdiry,
+         xorient = xctr * bodyaxisx + yctr * bodyaxisy + swimdist,
+         yorient = -xctr * bodyaxisy + yctr * bodyaxisx,
+         xorient = xorient / len.mm,
+         yorient = yorient / len.mm) %>%
+  distinct(indiv, trial, viscosity.cP, bodyparts, phase2, .keep_all = TRUE) %>%
+  filter(floor(phase) == case_when(trial == '7'  ~  4,
+                                   trial == '14'  ~  5,
+                                   trial == '34'  ~  3)) %>%
+  ggplot(aes(x = xorient, y = yorient, color = phase2)) +
+  geom_path(data = ~ filter(.x, frame %% 2 == 0),
+            aes(group = factor(phase2), color = phase2)) +
+  geom_path(aes(group = bodyparts), data = ~ filter(.x, bodyparts %in% c(1, 20)), color = 'gray') +
+  geom_point(data = ~ filter(.x, bodyparts %in% c(1, 20) & frame %% 2 == 0),
+             aes(group = bodyparts), show.legend = FALSE) +
+  scale_color_continuous(limits = c(0, 1)) +
+  coord_equal() +
+  facet_grid(viscosity.cP ~ .) +
+  theme_light() +
+  theme(axis.line=element_blank(),#axis.text.x=element_blank(),
+          axis.text.y=element_blank(),#axis.ticks=element_blank(),
+          axis.title.x=element_blank(),
+          axis.title.y=element_blank(), legend.position = 'bottom',
+          panel.background=element_blank(),panel.border=element_blank(),panel.grid.major=element_blank(),
+          panel.grid.minor=element_blank(),plot.background=element_blank())
+
+midline_plot
+```
+
+```{r}
+ggsave('plot_viscosity_midlines1.pdf', width = 4, height = 3)
+```
+
+```{r}
+amp_envelope_plot <-
+  midlines %>%
+  group_by(viscosity.cP, bodyparts) %>%
+  summarise(excmn = mean(abs(exc) / len.mm, na.rm = TRUE),
+            excsd = sd(abs(exc) / len.mm, na.rm = TRUE),
+            excse = excsd / sqrt(sum(!is.na(exc))),
+            s = mean(s / len.mm, na.rm = TRUE)) %>%
+  ggplot(aes(x = s, y = excmn, color = viscosity.cP, fill = viscosity.cP)) +
+  # geom_ribbon(aes(ymin = excmn - excse, ymax = excmn + excse), alpha = 0.5) +
+  scale_color_manual(values = c('black','brown','red')) +
+  scale_fill_manual(values = c('black','brown','red')) +
+  scale_x_continuous(limits = c(0, 1)) +
+  ylim(0.018, 0.07) +
+  geom_path() +
+  coord_fixed(ratio = 5) +
+  ylim(0, 0.072) +
+  labs(x = 'Arc length along body (L)', y = 'Excursion (L)') +
+  theme_light() +
+  theme(legend.position = 'none')
+
+amp_envelope_plot
+```
+
+```{r}
+midline_plot / amp_envelope_plot + plot_annotation(tag_levels = 'A') #+
+  #plot_layout(widths = c(2,1))
+
+```
+
+```{r}
+ggsave('plot_viscosity_midlines2.pdf', width = 3.5, height = 5)
+```
+
+
+```{r}
+tailvel <-
+  midlines %>%
+  # filter(indiv == '8' & trial %in% c('7', '14', '34')) %>%
+  filter(bodyparts %in% c(19, 20)) %>%
+  arrange(frame, bodyparts) %>%
+  group_by(filename, viscosity.cP, indiv, len.mm, trial, frame) %>%
+  mutate(x.ax = -(xmm - comx) * bodyaxisx + 
+             (ymm - comy) * bodyaxisy) %>%
+  summarize(dx = xmm[2] - xmm[1],
+            dy = ymm[2] - ymm[1],
+            ds = sqrt(dx^2 + dy^2),
+            nx = dy/ds,
+            ny = -dx/ds,
+            xmm = xmm[2],
+            ymm = ymm[2],
+            t = t[2],
+            cycle = cycle[2],
+            phase = phase[2],
+            dx.ax = x.ax[2] - x.ax[1],
+            dy.ax = exc[2] - exc[1],
+            exc = exc[2],
+            x.ax = x.ax[2]) %>%
+  mutate(tailangle.deg = atan2(dy.ax, dx.ax) * 180/pi,
+         tailvelx = (lead(xmm) - lag(xmm)) / (lead(t) - lag(t)),
+         tailvely = (lead(ymm) - lag(ymm)) / (lead(t) - lag(t)),
+         tailspeed.mms = sqrt(tailvelx^2 + tailvely^2),
+         tailspeedperp.mms = tailvelx*nx + tailvely*ny) %>%
+  ungroup()
+```
+
+```{r}
+tailvel %>%
+  filter(indiv == '8' & trial %in% c('7', '14', '34')) %>%
+  ggplot(aes(x = t, y = tailspeedperp.mms, color = cycle)) +
+  geom_path(aes(group = 1)) +
+  facet_grid(. ~ viscosity.cP)# , scales = 'free')
+
+```
+
+```{r}
+tailvel %>%
+  filter(indiv == '8' & trial %in% c('7', '14', '34')) %>%
+  mutate(tailangle.deg = unwrap(tailangle.deg, modulus = 360) + 180) %>%
+  ggplot(aes(x = t, y = tailangle.deg, color = cycle)) +
+  geom_path(aes(group = 1)) +
+  facet_grid(. ~ viscosity.cP)# , scales = 'free')
+```
+
+```{r}
+tailvelbycycle <-
+  tailvel %>%
+  filter(!is.na(cycle)) %>%
+  mutate(tailangle.deg = unwrap(tailangle.deg, modulus = 360, na.rm = TRUE)) %>%
+  group_by(filename, viscosity.cP, indiv, trial, cycle) %>%
+  summarize(
+    tailspeedperp.mms = mean(abs(tailspeedperp.mms), na.rm = TRUE),
+    tailspeed.mms = mean(abs(tailspeed.mms), na.rm = TRUE),
+    tailangle.deg = max(tailangle.deg, na.rm = TRUE) - min(tailangle.deg, na.rm = TRUE),
+    t = mean(t, na.rm = TRUE),
+    amp.mm = max(abs(exc), na.rm = TRUE)) %>%
+  ungroup()
+
+head(tailvelbycycle)
+```
+
+```{r}
+tailvel1 <-
+  tailvel %>%
+  group_by(indiv, trial) %>%
+  mutate(exc = exc / len.mm,
+         x.ax = x.ax / len.mm,
+         tailspeedperp.Ls = tailspeedperp.mms / len.mm,
+         tailspeed.Ls = tailspeed.mms / len.mm,
+         tailangle.deg = unwrap(tailangle.deg, modulus = 360),
+         tailangle.deg = tailangle.deg - mean(tailangle.deg, na.rm = TRUE)) %>%
+  mutate(isphasediff = any(viscosity.cP == '20' &
+                                 phase %% 1 > 0.9 &
+                                 tailangle.deg < -50)) %>%
+         #tailangle.deg = if_else(isphasediff, -tailangle.deg, tailangle.deg)) %>%
+  ungroup()
+
+tailvel1 <-
+  tailvel1 %>%
+  filter(!isphasediff) %>%
+  group_by(trial) %>%
+  mutate(cycle1 = as.integer(floor(phase)),
+         phase = phase %% 1) %>%
+  ungroup()
+
+tailvelbyviscosity <-
+  tailvel1 %>%
+  mutate(phasecat = round(phase*16)/16) %>%
+  filter(cycle >= 2) %>%
+  group_by(trial) %>%
+  mutate(x.ax0 = x.ax,
+         across(c(x.ax, exc, tailangle.deg), ~ . - median(., na.rm = TRUE))) %>%
+  group_by(viscosity.cP) %>%
+  mutate(x.ax0 = median(x.ax0, na.rm = TRUE)) %>%
+  group_by(viscosity.cP, phasecat) %>%
+  summarize(across(c(tailangle.deg, exc, x.ax, tailspeedperp.Ls, tailspeed.Ls, phase, x.ax0), ~ median(., na.rm = TRUE))) %>%
+  mutate(x.ax = x.ax + x.ax0)
+
+p1 <-
+  tailvel1 %>%
+  ggplot(aes(x = phase, y = tailangle.deg, group = interaction(indiv, trial, cycle1))) + #, group = cycle1)) +
+  geom_path(color = 'gray') +
+  geom_path(data = tailvelbyviscosity,
+            inherit.aes = FALSE,
+            aes(x = phase, y = tailangle.deg)) +
+  facet_grid(. ~ viscosity.cP)
+
+p2 <-
+  tailvel1 %>%
+  ggplot(aes(x = phase, y = exc, group = interaction(indiv, trial, cycle1))) +
+  geom_path(color = 'gray') +
+  geom_path(data = tailvelbyviscosity,
+            inherit.aes = FALSE,
+            aes(x = phase, y = exc)) +
+  facet_grid(. ~ viscosity.cP)
+
+p3 <-
+  tailvel1 %>%
+  ggplot(aes(x = phase, y = tailspeedperp.Ls, group = interaction(indiv, trial, cycle1))) +
+  geom_path(color = 'gray') +
+  geom_path(data = tailvelbyviscosity,
+            inherit.aes = FALSE,
+            aes(x = phase, y = tailspeedperp.Ls)) +
+  facet_grid(. ~ viscosity.cP)
+
+p1 / p2 / p3
+```
+
+```{r}
+p1 <- tailvelbyviscosity %>%
+#  filter(phase >= 0.5 & phase <= 1) %>%
+  ggplot(aes(x = x.ax, y = exc, color = viscosity.cP)) +
+  geom_path() +
+  geom_point() +
+  geom_spoke(aes(angle = (tailangle.deg + 0) * pi/180), radius = 0.04) +
+  coord_equal() +
+  facet_grid(. ~ viscosity.cP)
+
+p2 <- tailvel1 %>%
+  ggplot(aes(x = phase, y = tailangle.deg)) +
+  geom_path(aes(group = interaction(indiv, trial, cycle1)), color = 'gray') +
+  geom_line(data = tailvelbyviscosity,
+         aes(x = phase, y = tailangle.deg, color = viscosity.cP),
+         inherit.aes = FALSE) +
+  geom_point(data = tailvelbyviscosity,
+         aes(x = phase, y = tailangle.deg, color = viscosity.cP),
+         inherit.aes = FALSE) +
+  facet_grid(. ~ viscosity.cP) +
+  ylim(-85, 85)
+
+p1 / p2
+```
+
+```{r}
+write_csv(tailvelbycycle, 'tailveldata.csv')
+```
+
