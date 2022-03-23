@@ -14,3 +14,4 @@ Viscosity.key
 *.avi
 *.docx
 *.mat
+.ipynb_checkpoints
