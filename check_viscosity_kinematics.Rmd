@@ -13,6 +13,7 @@ library(here)
 
 ```{r}
 source('process_midlines.R')
+source('hdf5dataset.R')
 ```
 
 ```{r}
@@ -109,8 +110,17 @@ write_hdf5(midlines, here('midlines_all.h5'))
 
 
 ```{r}
-midlines <- read_hdf5(here('midlines_all.h5')) %>%
-  mutate(date = as_date(date))
+midlines <- read_hdf5_old(here('midlines_all.h5')) %>%
+  mutate(date = as_date(date),
+         filename = as.character(filename))
+```
+
+```{r}
+midlines %>%
+  mutate(filename = as.character(filename),
+         indiv = as.character(indiv),
+         viscosity.cP = as.numeric(as.character(viscosity.cP))) %>%
+  write_hdf5('midlines_all2.h5')
 ```
 
 ```{r}

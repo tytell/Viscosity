@@ -19,14 +19,16 @@ library(here)
 
 ```{r}
 source('process_midlines.R')
+source('hdf5dataset.R')
 ```
 
 ```{r}
-midlines <- read_hdf5(here('midlines_all_kinematics.h5')) %>%
+midlines <- read_hdf5_old(here('midlines_all_kinematics.h5')) %>%
   mutate(date = as_date(date),
          viscosity.cP = as.factor(viscosity.cP)) %>%
   filter(!is.na(viscosity.cP))
 ```
+
 
 ```{r}
 midlines %>%
@@ -200,27 +202,45 @@ ggsave('plot_viscosity_midlines1.pdf', width = 4, height = 3)
 ```
 
 ```{r}
+midlines %>%
+  filter(indiv == 5 & trial == 10) %>%
+  ggplot(aes(x = t, y = exc, color = bodyparts)) +
+  geom_path()
+  
+```
+
+```{r}
 amp_envelope_plot <-
   midlines %>%
+  #filter(indiv == 5 & trial %in% c(10, 11)) %>%
+  group_by(viscosity.cP, bodyparts, filename, cycle) %>%
+  summarize(excpk = max(abs(exc), na.rm = TRUE),
+            len.mm = first(na.omit(len.mm)),
+            s = first(na.omit(s))) %>%
   group_by(viscosity.cP, bodyparts) %>%
-  summarise(excmn = mean(abs(exc) / len.mm, na.rm = TRUE),
-            excsd = sd(abs(exc) / len.mm, na.rm = TRUE),
-            excse = excsd / sqrt(sum(!is.na(exc))),
+  summarise(excmn = mean(excpk / len.mm, na.rm = TRUE),
+            excsd = sd(excpk / len.mm, na.rm = TRUE),
+            n = sum(!is.na(excpk)),
+            excse = excsd / sqrt(n),
             s = mean(s / len.mm, na.rm = TRUE)) %>%
-  ggplot(aes(x = s, y = excmn, color = viscosity.cP, fill = viscosity.cP)) +
+  mutate(loc = (as.integer(bodyparts)-1)/19) %>%
+  ggplot(aes(x = loc, y = excmn, color = viscosity.cP, fill = viscosity.cP)) +
   # geom_ribbon(aes(ymin = excmn - excse, ymax = excmn + excse), alpha = 0.5) +
   scale_color_manual(values = c('black','brown','red')) +
   scale_fill_manual(values = c('black','brown','red')) +
-  scale_x_continuous(limits = c(0, 1)) +
-  ylim(0.018, 0.07) +
+  #scale_x_continuous(limits = c(0, 1)) +
   geom_path() +
-  coord_fixed(ratio = 5) +
-  ylim(0, 0.072) +
-  labs(x = 'Arc length along body (L)', y = 'Excursion (L)') +
+  expand_limits(y = 0) +
+  labs(x = 'Position along body (L)', y = 'Excursion (L)') +
   theme_light() +
   theme(legend.position = 'none')
 
 amp_envelope_plot
+```
+
+
+```{r}
+ggsave('envelope_plot.pdf', width=3.5, height = 1.5)
 ```
 
 ```{r}

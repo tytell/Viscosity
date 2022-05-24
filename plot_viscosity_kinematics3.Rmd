@@ -20,10 +20,12 @@ library(broom)
 library(car)
 library(patchwork)
 library(here)
+library(gt)
 ```
 
 ```{r}
 source(here('process_midlines.R'))
+source(here('hdf5dataset.R'))
 ```
 
 # Load the data
@@ -31,7 +33,7 @@ source(here('process_midlines.R'))
 Load in the processed kinematics data and update some of the variable names.  This includes frame-by-frame data for the entire body.
 
 ```{r}
-kinematicsdata_all <- read_hdf5(here('midlines_all_kinematics.h5')) %>%
+kinematicsdata_all <- read_hdf5_old(here('midlines_all_kinematics.h5')) %>%
   mutate(date = as_date(date)) %>%
   mutate(wavespeed.mms = (snextseg - s)/(tpnextseg - tp)) %>%
   filter(!is.na(viscosity.cP)) %>%
@@ -42,6 +44,50 @@ kinematicsdata_all <- read_hdf5(here('midlines_all_kinematics.h5')) %>%
          wavelength.mm = wavelength,
          amp.mm = amp,
          speed.mms = swimvels)
+```
+
+## Baseline stats
+
+```{r}
+rho <- 1000   # kg/m^3
+```
+
+```{r}
+totals <-
+  kinematicsdata_all %>%
+  group_by(viscosity.cP, indiv, trial) %>%
+  summarize(dur = max(t) - min(t),
+            nbeats = max(cycle, na.rm = TRUE)) %>%
+  summarize(ntrials = n(),
+            totaldur = sum(dur),
+            totalbeats = sum(nbeats),
+            avgdur = mean(dur),
+            avgbeats = mean(nbeats)) %>%
+  summarize(totaltrials = sum(ntrials),
+            totaldur = sum(totaldur),
+            totalbeats = sum(totalbeats),
+            avgdur = mean(avgdur),
+            avgbeats = mean(avgbeats))
+
+totals
+```
+
+```{r}
+kinematicsdata_all %>%
+  distinct(indiv, len.mm)
+```
+
+```{r}
+kinematicsdata_all %>%
+  distinct(indiv, len.mm) %>%
+  summarize(lenmn.mm = mean(len.mm),
+            lensd.mm = sd(len.mm))
+
+```
+
+```{r}
+totals %>%
+  summarize(across(starts_with('total'), ~sum(.x)))
 ```
 
 Now take means over half tailbeat cycles and over the body.
@@ -177,7 +223,7 @@ kinematicsdata.bytrial <-
   filter(!(trial %in% outliertrials),
          wavespeed.Ls > 0 & wavespeed.Ls < 7, 
          freq.hz > 0 & freq.hz < 10) %>%
-  group_by(indiv, viscosity.cP, trial) %>%
+  group_by(indiv, len.mm, viscosity.cP, trial) %>%
   summarize(across(c(speed.Ls, freq.hz, amp.head.L, amp.tail.L, wavelength.L, wavespeed.Ls, slip, stridelength, St),
                    ~ mean(., na.rm = TRUE)),
             dur.s = max(tcycle.s, na.rm = TRUE) - min(tcycle.s, na.rm = TRUE),
@@ -185,6 +231,35 @@ kinematicsdata.bytrial <-
   ungroup()
 
 head(kinematicsdata.bytrial)
+```
+
+```{r}
+write_hdf5(kinematicsdata.bytrial, 'kinematicsdatabytrial.h5')
+```
+
+### Add in Luna's wavelengths
+
+```{r}
+coddata <- read_csv('Data/coddata.csv') %>%
+  mutate(indiv = factor(indiv),
+         viscosity = factor(viscosity)) %>%
+  select(-`...1`)
+```
+```{r}
+coddata <- 
+  coddata %>%
+  filter(mode == 1 & point == 20) %>%
+  select(indiv, trial, wavelength, traveling) %>%
+  mutate(trial = paste(indiv, trial, sep='-')) %>%
+  rename(wavelength2 = wavelength)
+```
+
+```{r}
+kinematicsdata.bytrial <-
+  left_join(kinematicsdata.bytrial, coddata,
+          by = c("indiv", "trial")) %>%
+  mutate(wavelength2.L = wavelength2/len.mm) %>%
+  select(-wavelength2)
 ```
 
 Update the viscosity measurement. 10cP was actually 6cP.
@@ -195,6 +270,33 @@ kinematicsdata.bytrial <-
          viscosity.cP = case_when(viscosity == '1'  ~  1,
                                   viscosity == '6'  ~  6,
                                   viscosity == '20'  ~  20))
+```
+
+### Add in the tail velocity and additional amplitude calculation
+
+```{r}
+tailvelbycycle <- read_csv('tailveldata.csv')
+head(tailvelbycycle)
+```
+
+```{r}
+kinematicsdata.bytrial <-
+  tailvelbycycle %>%
+  mutate(trial = paste(indiv, trial, sep='-'),
+         indiv = factor(indiv)) %>%
+  group_by(indiv, trial) %>%
+  summarize(across(c(amp.mm), ~ mean(., na.rm = TRUE))) %>%
+  right_join(kinematicsdata.bytrial, by = c("indiv", "trial")) %>%
+  mutate(amp.L = amp.mm / len.mm)
+
+head(kinematicsdata.bytrial)
+```
+
+```{r}
+kinematicsdata.bytrial %>%
+  ggplot(aes(x = amp.tail.L, y = amp.L, color = viscosity.cP)) +
+  geom_point() +
+  geom_abline(slope = 1)
 ```
 
 # Main kinematics plots
@@ -228,12 +330,13 @@ speed_plot <-
 speed_plot
 ```
 
+
 ## Tail amplitude vs viscosity
 
 ```{r}
 amp_tail_plot <-
   kinematicsdata.bytrial %>%
-  ggplot(aes(x = viscosity, y = amp.tail.L)) +
+  ggplot(aes(x = viscosity, y = amp.L)) +
   geom_dots(aes(color = indiv, shape = indiv),
             group = NA,
             position = 'dodge',
@@ -303,7 +406,7 @@ freq_plot
 ```{r}
 wavelen_plot <-
   kinematicsdata.bytrial %>%
-  ggplot(aes(x = viscosity, y = wavelength.L)) +
+  ggplot(aes(x = viscosity, y = wavelength2.L)) +
   geom_dots(aes(color = indiv, shape = indiv),
             group = NA,
             position = 'dodge',
@@ -327,15 +430,16 @@ Rearrange the data table in an even longer format so that we can run all of the 
 ```{r}
 kinematicsdata.long <-
   kinematicsdata.bytrial %>%
-  mutate(amp.rel = amp.head.L / amp.tail.L) %>%
-  select(indiv, viscosity, trial, speed.Ls, amp.rel, amp.tail.L, freq.hz, wavelength.L, wavespeed.Ls, slip, stridelength, St, dur.s, nbeats) %>%
-  pivot_longer(cols = c(speed.Ls, amp.rel, amp.tail.L, freq.hz, wavelength.L, wavespeed.Ls, slip, stridelength, St, dur.s, nbeats), names_to = "param")
+  mutate(amp.rel = amp.head.L / amp.tail.L,
+         Re_body = rho * speed.Ls * (len.mm/1000)^2 / (viscosity.cP * 1e-3)) %>%
+  select(indiv, viscosity, trial, speed.Ls, amp.rel, amp.L, freq.hz, wavelength2.L, wavespeed.Ls, slip, stridelength, St, dur.s, nbeats, Re_body, traveling) %>%
+  pivot_longer(cols = c(speed.Ls, amp.rel, amp.L, freq.hz, wavelength2.L, wavespeed.Ls, slip, stridelength, St, dur.s, nbeats, Re_body, traveling), names_to = "param")
 ```
 
 Plot key parameters just to check.
 ```{r}
 kinematicsdata.long %>%
-  filter(param %in% c('speed.Ls', 'amp.tail.L', 'freq.hz', 'wavelength.L', 'wavespeed.Ls')) %>%
+  filter(param %in% c('speed.Ls', 'amp.L', 'freq.hz', 'wavelength2.L', 'wavespeed.Ls')) %>%
   ggplot(aes(x = viscosity, y = value)) +
   geom_dots(layout = 'swarm', side='both',
             binwidth = unit(0.02, 'npc')) +
@@ -345,11 +449,29 @@ kinematicsdata.long %>%
 And the nondimensional parameters
 ```{r}
 kinematicsdata.long %>%
-  filter(param %in% c('stridelength', 'slip', 'St')) %>%
+  filter(param %in% c('stridelength', 'slip', 'St',  'traveling')) %>%
   ggplot(aes(x = viscosity, y = value)) +
   geom_dots(layout = 'swarm', side='both') +
 #            binwidth = unit(0.02, 'npc')) +
   facet_wrap(~ param, scales = 'free')
+```
+
+Get overall means and standard deviations
+```{r}
+kinematicsdata.long %>%
+  group_by(param, viscosity) %>%
+  summarize(mn = mean(value, na.rm = TRUE),
+            sd = sd(value, na.rm = TRUE))
+```
+
+```{r}
+kinematicsdata.long %>%
+  filter(param %in% c('wavelength2.L', 'amp.tail.L')) %>%
+  group_by(param, indiv, viscosity) %>%
+  summarize(mn = mean(value, na.rm = TRUE),
+            sd = sd(value, na.rm = TRUE)) %>%
+  mutate(d = mn - first(mn)) %>%
+  arrange(param, viscosity, indiv)
 ```
 
 ## Build the models
@@ -391,15 +513,111 @@ kinematicsstats <-
 
 kinematicsstats
 ```
+
+
+
 Also add in the group-wise marginal means.
 ```{r}
 kinematicsmeans <-
   kinematicsmodels %>%
   mutate(means = purrr::map(model, ~ tidy(emmeans(., specs = ~viscosity)))) %>%
+         #effs = purrr::map(model, ~ tidy(eff_size(., specs)))) %>%
   select(param, means) %>%
   unnest(means)
 
 kinematicsmeans
+```
+
+```{r}
+effect_sizes <-
+  kinematicsmodels %>%
+  mutate(effs = purrr::map(model, 
+                           ~tidy(eff_size(emmeans(., specs = ~viscosity),
+                                          sigma = sigma(.),
+                                          edf = df.residual(.))))) %>%
+  select(param, effs) %>%
+  unnest(effs)
+```
+
+```{r}
+statstable <-
+  kinematicsstats %>%
+  select(param, Fstat, Fdf1, Fdf2, Fp) %>%
+  ungroup() %>%
+  distinct(param, .keep_all = TRUE) %>%
+  right_join(effect_sizes, by = 'param') %>%
+  select(-c(term, null.value, std.error, df, statistic, p.value)) %>%
+  filter(contrast != '6 - 20') %>%
+  mutate(estimate = -estimate,
+         contrast = case_when(contrast == '1 - 6'  ~  '6 - 1',
+                              contrast == '1 - 20'  ~  '20 - 1')) %>%
+  pivot_wider(names_from = contrast, values_from = estimate) %>%
+  filter(param %in% c('speed.Ls',
+                      'amp.L',
+                      'freq.hz',
+                      'wavelength2.L',
+                      'wavespeed.Ls',
+                      'stridelength',
+                      'St',
+                      'traveling')) %>%
+  separate(param, into = c('param'), sep = '\\.', extra = 'drop') %>%
+  mutate(param = case_when(param == 'speed'  ~   'Swimming speed',
+                           param == 'amp'  ~  'Tail beat amplitude',
+                           param == 'freq'  ~  'Tail beat frequency',
+                           param == 'wavelength2'  ~  'Body wavelength',
+                           param == 'wavespeed'  ~  'Body wave speed',
+                           param == 'stridelength'  ~  'Stride length',
+                           param == 'St'  ~  'Strouhal number',
+                           param == 'traveling'  ~  'Traveling wave index',
+                           TRUE  ~  param
+                           )) %>%
+  rename(F = Fstat,
+         df1 = Fdf1,
+         df2 = Fdf2,
+         p = Fp) %>%
+  gt(rowname_col = 'param') %>%
+  tab_spanner(label = 'Effect sizes',
+              columns = c(`6 - 1`, `20 - 1`)) %>%
+  fmt_number('F', n_sigfig = 3) %>%
+  fmt_number('p', decimals = 3) %>%
+  fmt_number(c(`6 - 1`, `20 - 1`),
+             decimals = 2) %>%
+  tab_style(
+    style = cell_text(weight = "bold"),
+    locations = cells_body(rows = abs(`6 - 1`) >= 0.8,
+                           columns = `6 - 1`)
+  ) %>%
+  tab_style(
+    style = cell_text(style = "italic"),
+    locations = cells_body(rows = abs(`6 - 1`) >= 0.5 & abs(`6 - 1`) < 0.8,
+                           columns = `6 - 1`)
+  ) %>%
+  tab_style(
+    style = cell_text(weight = "lighter"),
+    locations = cells_body(rows = abs(`6 - 1`) < 0.5,
+                           columns = `6 - 1`)
+  ) %>%
+  tab_style(
+    style = cell_text(weight = "bold"),
+    locations = cells_body(rows = abs(`20 - 1`) >= 0.8,
+                           columns = `20 - 1`)
+  ) %>%
+  tab_style(
+    style = cell_text(style = "italic"),
+    locations = cells_body(rows = abs(`20 - 1`) >= 0.5 & abs(`20 - 1`) < 0.8,
+                           columns = `20 - 1`)
+  ) %>%
+  tab_style(
+    style = cell_text(weight = "lighter"),
+    locations = cells_body(rows = abs(`20 - 1`) < 0.5,
+                           columns = `20 - 1`)
+  )
+
+statstable
+```
+
+```{r}
+gtsave(statstable, 'statstable.tex')
 ```
 
 ## Generate the final plots
@@ -425,12 +643,12 @@ speed_plot_stat
 ```{r}
 amp_tail_plot_stat <-
   amp_tail_plot +
-  geom_pointrange(data = filter(kinematicsmeans, param == 'amp.tail.L'),
+  geom_pointrange(data = filter(kinematicsmeans, param == 'amp.L'),
                   aes(x = viscosity, y = estimate, ymin = estimate - std.error, ymax = estimate + std.error),
                   shape = 4, size = 0.5) +
-  geom_line(data = filter(kinematicsmeans, param == 'amp.tail.L'),
+  geom_line(data = filter(kinematicsmeans, param == 'amp.L'),
                   aes(x = viscosity, y = estimate, group = 1)) +
-  stat_pvalue_manual(data = filter(kinematicsstats, param == 'amp.tail.L'),
+  stat_pvalue_manual(data = filter(kinematicsstats, param == 'amp.L'),
                      label = '{p.format}{p.adj.signif}',
                      x.position = 'viscosity',
                      y.position = 0.18)
@@ -456,26 +674,71 @@ freq_plot_stat
 ```
 
 
+
+
 ```{r}
 wavelen_plot_stat <-
   wavelen_plot +
-  geom_pointrange(data = filter(kinematicsmeans, param == 'wavelength.L'),
+  geom_pointrange(data = filter(kinematicsmeans, param == 'wavelength2.L'),
                   aes(x = viscosity, y = estimate, ymin = estimate - std.error, ymax = estimate + std.error),
                   shape = 4, size = 0.5) +
-  geom_line(data = filter(kinematicsmeans, param == 'wavelength.L'),
+  geom_line(data = filter(kinematicsmeans, param == 'wavelength2.L'),
                   aes(x = viscosity, y = estimate, group = 1)) +
-  annotate('text', x = 2, y = 0.9, label = 'ns')
+  stat_pvalue_manual(data = filter(kinematicsstats, param == 'wavelength2.L'),
+                     label = '{p.format}{p.adj.signif}',
+                     x.position = 'viscosity',
+                     y.position = 0.9,
+                     hide.ns = TRUE)
+
+  #  annotate('text', x = 2, y = 0.9, label = 'ns')
 
 wavelen_plot_stat
 ```
 ## Put together the final kinematics figure
 
 ```{r}
-speed_plot_stat + amp_tail_plot_stat + freq_plot_stat + wavelen_plot_stat +
+speed_plot_stat + freq_plot_stat +
   plot_annotation(tag_levels = 'A')
 ```
 ```{r}
-ggsave('kinematics_plot.pdf', width = 6, height = 4.5)
+ggsave('kinematics_plot.pdf', width = 4.33, height = 2)
+```
+
+```{r}
+amp_tail_plot_stat
+```
+```{r}
+ggsave('amp_plot.pdf', width=3, height = 2)
+```
+
+```{r}
+wavelen_plot_stat
+```
+
+```{r}
+ggsave('wavelen_plot.pdf', width=3, height = 2)
+```
+
+```{r}
+cfddata <- read_csv(here('cfdviscositykinematics.csv'))
+```
+```{r}
+cfddata
+```
+
+
+```{r}
+kinematicsmeans %>%
+  mutate(viscosity.cP = as.numeric(as.character(viscosity))) %>%
+  filter(param == 'wavelength2.L') %>%
+  ggplot(aes(x = viscosity.cP, y = estimate)) +
+  geom_pointrange(aes(ymin = estimate - std.error, ymax = estimate + std.error),
+                  shape = 4, size = 0.5) +
+  geom_line(aes(group = 1)) +
+  geom_point(data = cfddata, aes(x = viscosity, y = wavelen / bodylen), color = 'red',
+             inherit.aes = FALSE) +
+  geom_line(data = cfddata, aes(x = viscosity, y = wavelen / bodylen), color = 'red',
+             inherit.aes = FALSE)
 ```
 
 ## Final nondimensional parameter figure
@@ -579,14 +842,67 @@ St_plot <-
 St_plot
 ```
 
+```{r}
+traveling_plot <-
+  kinematicsdata.bytrial %>%
+  ggplot(aes(x = viscosity, y = traveling)) +
+  geom_dots(aes(color = indiv, shape = indiv),
+            group = NA,
+            position = 'dodge',
+            width = 0.6,
+            side = 'both',
+            binwidth = unit(binwidth, 'npc'),
+            layout = 'swarm',
+            show.legend = FALSE) +
+  scale_shape_manual(values = shapes) +
+  scale_color_brewer(type = 'qual', palette = 'Set1') +
+  labs(y = 'Traveling wave index', x = 'Viscosity (cP)') +
+  geom_pointrange(data = filter(kinematicsmeans, param == 'traveling'),
+                  aes(x = viscosity, y = estimate, ymin = estimate - std.error, ymax = estimate + std.error),
+                  shape = 4, size = 0.5) +
+  geom_line(data = filter(kinematicsmeans, param == 'traveling'),
+                  aes(x = viscosity, y = estimate, group = 1)) +
+  scale_y_continuous(breaks = c(0.3, 0.6, 0.9, 1.2)) +
+  stat_pvalue_manual(data = filter(kinematicsstats, param == 'traveling'),
+                     label = '{p.format}{p.adj.signif}',
+                     x.position = 'viscosity',
+                     y.position = 0.95,
+                     hide.ns = TRUE) +
+  theme_bw() +
+  theme(panel.border = element_blank(), axis.line = element_line())
+  
+
+traveling_plot
+```
 
 ```{r}
-stridelen_plot / slip_plot / St_plot +
+stridelen_plot / St_plot / traveling_plot +
   plot_annotation(tag_levels = 'A')
 ```
 
 
 ```{r}
 ggsave('efficiency_plot.pdf', width = 3, height = 6)
+```
+
+# Citations
+
+```{r}
+citation()
+sessionInfo()
+```
+
+```{r}
+citation('lme4')
+packageVersion('lme4')
+```
+
+```{r}
+citation('emmeans')
+packageVersion('emmeans')
+```
+```{r}
+citation('lmerTest')
+packageVersion('lmerTest')
 ```
 
