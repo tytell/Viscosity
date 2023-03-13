@@ -1,0 +1,343 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+library(tidyverse)
+library(lubridate)
+library(ggdist)
+library(patchwork)
+library(here)
+```
+
+```{r}
+source(here('process_midlines.R'))
+source(here('hdf5dataset.R'))
+```
+
+```{r}
+sim1x <- read_csv('Data/sim_viscosity1x.csv') |> 
+  mutate(indiv = 'sim', trial = 'sim1x',
+         len.mm = 4*pi*10)
+
+sim10x <- read_csv('Data/sim_viscosity10x.csv') |>
+  mutate(indiv = 'sim', trial = 'sim10x',
+         len.mm = 4*pi*10)
+
+sim1x <- sim1x |> 
+  mutate(point = rep(seq(0,320), length.out=nrow(sim1x)),
+         dframe = as.integer(t > lag(t)),
+         dframe = replace_na(dframe, 0),
+         frame = cumsum(dframe)+1) |> 
+  select(-dframe) |> 
+  filter(point %% 10 == 0)
+
+sim10x <- sim10x |> 
+  mutate(point = rep(seq(0,320), length.out=nrow(sim10x)),
+         dframe = as.integer(t > lag(t)),
+         dframe = replace_na(dframe, 0),
+         frame = cumsum(dframe)+1) |> 
+  select(-dframe) |> 
+  filter(point %% 10 == 0)
+
+simdata <-
+  bind_rows(sim1x, sim10x)
+```
+
+```{r}
+simdata |> 
+  filter(frame %% 10 == 0) |> 
+  ggplot(aes(x = xm, y = ym, color = trial)) +
+  geom_path(aes(group = frame)) +
+  facet_wrap(~ trial, ncol = 1, scales = 'free')
+```
+
+```{r}
+width <-
+  read_csv(here('fishwidth.csv')) |>
+  pull(ammowidth)
+```
+
+```{r eval=FALSE}
+simkinematics <- simdata |>
+  arrange(indiv, trial, frame) |>
+  mutate(indiv = factor(indiv),
+         trial = factor(trial)) |> 
+  rename(bodyparts = point) |>
+  mutate(bodyparts = factor(bodyparts)) |> 
+  # convert from cm to mm
+  mutate(xmm = xm * 10,
+         ymm = ym * 10,
+         len.mm = 4*pi * 10) |>
+  select(-c(xm, ym)) |> 
+  group_by(indiv, trial) |>
+  group_modify(~ get_all_kinematics(.x, .y, width, smooth.excursion = 0.2, min.peak.gap = 0.01, min.peak.size = 0.01)) |>
+  # for some unclear reason, this gives sensible results if I put it here, but not if it's in get_all_kinematics
+  mutate(wavespeed = (snextseg - s)/(tpnextseg - tp))
+
+write_hdf5(simkinematics, here('simkinematics.h5'))
+```
+
+```{r}
+simkinematics <- read_hdf5(here('simkinematics.h5'))
+```
+
+```{r}
+simkinematics |> 
+  mutate(excx = (xmm - comx)*bodyaxisx + (ymm - comy)*bodyaxisy) |> 
+  filter(issteady & (frame %% 4 == 0)) |> 
+  ggplot(aes(x = excx, y = exc, group = frame, color = trial)) +
+  geom_path() +
+  facet_wrap(~ trial, ncol = 1)
+```
+
+```{r}
+simkinematics |> 
+  filter(issteady != 0) |> 
+  ggplot(aes(x = s, y = abs(curve), color = trial)) +
+  geom_point() +
+  facet_wrap(~ trial, ncol = 1)
+```
+
+```{r}
+simamplitudes <-
+  simkinematics |> 
+  filter(issteady != 0) |> 
+  group_by(viscosity, trial, bodyparts, cycle) |> 
+  summarize(curve = max(abs(curve), na.rm = TRUE),
+            amp = max(abs(exc), na.rm = TRUE),
+            s = mean(s, na.rm = TRUE),
+            swimvel = mean(swimvels, na.rm = TRUE)) |> 
+  summarize(across(c(curve, amp, s, swimvel), ~ mean(.x, na.rm = TRUE))) |> 
+  mutate(len.mm = 4*pi*10)
+```
+
+```{r}
+write_hdf5(simamplitudes, 'simamplitudes.h5')
+```
+
+```{r}
+simamplitudes |> 
+  ggplot(aes(x = s / len.mm, y = curve)) +
+  geom_path() +
+  facet_wrap(~ viscosity, ncol = 1)
+```
+
+```{r}
+simamplitudes |> 
+  ggplot(aes(x = s / len.mm, y = amp / len.mm)) +
+  geom_path() +
+  facet_wrap(~ viscosity, ncol = 1)
+```
+
+## Curvature and amplitude near the tail
+```{r}
+simtail <-
+  simamplitudes |> 
+  mutate(s.L = s / len.mm,
+         amp.L = amp / len.mm,
+         speed.L = swimvel / len.mm) |> 
+  filter(s.L > 0.9) |> 
+  group_by(viscosity) |> 
+  mutate(curve = if_else(!is.finite(curve), NA_real_, curve)) |> 
+  summarize(across(c(amp.L, curve, speed.L), ~ mean(.x, na.rm = TRUE)))
+
+simtail |> 
+  bind_rows(
+    simtail |> 
+      ungroup() |> 
+      summarize(across(c(amp.L, curve, speed.L), ~ .x[1] / .x[2]))
+  )
+```
+
+# Get live data
+
+```{r}
+kinematicsdata_all <- read_hdf5_old(here('midlines_all_kinematics.h5')) |>
+  mutate(date = as_date(date)) |>
+  mutate(wavespeed.mms = (snextseg - s)/(tpnextseg - tp)) |>
+  filter(!is.na(viscosity.cP)) |>
+  mutate(indiv = factor(indiv),
+         viscosity.cP = factor(viscosity.cP),
+         trial = interaction(indiv, trial, sep='-')) |>
+  rename(freq.hz = freq,
+         wavelength.mm = wavelength,
+         amp.mm = amp,
+         speed.mms = swimvels)
+```
+
+```{r}
+kinematicsdata_all <-
+  kinematicsdata_all |> 
+  group_by(indiv) |> 
+  filter(bodyparts == '20') |> 
+  summarize(len.mm = mean(s, na.rm = TRUE)) |> 
+  right_join(kinematicsdata_all |> 
+               select(-len.mm),
+             by = "indiv")
+```
+
+```{r}
+kinamplitudes <-
+  kinematicsdata_all |> 
+  group_by(viscosity.cP, bodyparts, indiv, trial, cycle) |> 
+  summarize(curve = suppressWarnings(max(abs(curve), na.rm = TRUE)),
+            amp = max(abs(exc), na.rm = TRUE),
+            s = mean(s, na.rm = TRUE),
+            len.mm = mean(len.mm),
+            speed.mms = mean(speed.mms, na.rm = TRUE)) |> 
+  mutate(curve = if_else(is.infinite(curve), NA_real_, curve)) |> 
+  group_by(viscosity.cP, bodyparts, indiv) |> 
+  summarize(across(c(curve, amp, s, len.mm, speed.mms), ~ mean(.x, na.rm = TRUE)))
+```
+
+```{r}
+kinamplitudes <-
+  kinamplitudes |> 
+  rename(viscosity = viscosity.cP)
+  # mutate(curve = curve * len.mm,
+  #        amp = amp / len.mm,
+  #        s = s / len.mm)
+```
+
+```{r}
+kinamplitudes |> 
+  arrange(viscosity, indiv, bodyparts)
+```
+
+```{r}
+simamplitudes <-
+  simamplitudes |> 
+  mutate(viscosity = fct_recode(viscosity, '1' = '1x', '10' = '10x', '20' = '20x'))
+```
+
+```{r}
+kinmeans <-
+  kinamplitudes |> 
+  group_by(viscosity, bodyparts) |> 
+  mutate(s = s / len.mm,
+         amp = amp / len.mm) |> 
+  summarize(across(c(s, amp, curve), ~mean(., na.rm = TRUE)))
+```
+
+```{r}
+excursion_plot <-
+  kinmeans |> 
+  ggplot(aes(x = s, y = amp, color = viscosity)) +
+  geom_path( size = 2) +
+  geom_path(data = simamplitudes |>
+              mutate(s = s / (4*pi*10),
+                     amp = amp / (4*pi*10)),
+            inherit.aes = FALSE,
+            aes(x = s, y = amp, color = viscosity), linetype = 'dashed') +
+  scale_color_grey(start = 0, end = 0.8) +
+  labs(y = 'Excursion (L)', x = 'Position along body (L)') +
+  theme_bw() +
+  theme(panel.border = element_blank(), axis.line = element_line())
+  
+excursion_plot
+```
+
+```{r}
+ggsave('excursion_plot.pdf', excursion_plot,
+       width = 3, height = 2.5, units = 'in')
+```
+
+```{r}
+kinamplitudes |> 
+  group_by(indiv) |> 
+  filter(viscosity != '20') |> 
+  arrange(viscosity, indiv, bodyparts) |> 
+  mutate(s = s / len.mm) |> 
+  ggplot(aes(x = s, y = curve, color = viscosity)) +
+  geom_path(aes(group = interaction(indiv, viscosity))) +
+  geom_path(data = kinmeans, aes(x = s, y = curve, color = viscosity), size = 2) +
+  geom_path(data = simamplitudes |>
+              mutate(s = s / (4*pi*10)),
+            inherit.aes = FALSE,
+            aes(x = s, y = curve, color = viscosity), linetype = 'dashed')
+  #facet_wrap(~ viscosity, ncol = 1)
+```
+```{r}
+kintail <-
+  kinamplitudes |> 
+  mutate(s.L = s / len.mm,
+         speed.Ls = speed.mms / len.mm) |> 
+  filter(between(s.L, 0.8, 0.95)) |> 
+  group_by(viscosity) |> 
+  summarize(across(c(curve, amp, speed.Ls), 
+                   list(mn = ~mean(., na.rm = TRUE),
+                        sd = ~sd(., na.rm = TRUE)))) |> 
+  mutate(type = 'live')
+  
+```
+
+
+```{r}
+simtail <- 
+  simamplitudes |> 
+  mutate(s1 = s / len.mm,
+         speed.Ls = swimvel / len.mm) |> 
+  filter(between(s1, 0.8, 0.95)) |> 
+  group_by(viscosity) |> 
+  summarize(across(c(curve, amp, speed.Ls), 
+                   list(mn = ~mean(., na.rm = TRUE),
+                        sd = ~sd(., na.rm = TRUE)))) |> 
+  mutate(type = 'sim')
+```
+
+```{r}
+bind_rows(simtail, kintail) |> 
+  mutate(viscosity = fct_relevel(viscosity, '1', '10', '20')) |> 
+  arrange(type, viscosity) |> 
+  group_by(type) |> 
+  mutate(across(c(curve_mn, amp_mn, speed.Ls_mn), 
+                list(d = ~ (.x - .x[1])/.x[1])))
+```
+
+```{r}
+simwavelen <-
+  simkinematics |> 
+  filter(issteady > 0) |> 
+  filter(!is.na(wavelength)) |> 
+  mutate(point = as.numeric(as.character(bodyparts))) |> 
+  filter(point >= 150) |> 
+  mutate(viscosity = fct_recode(viscosity, '1' = '1x', '10' = '10x'),
+         wavelength = wavelength / (4*pi*10))  
+```
+
+```{r}
+simwavelen |> 
+  ggplot(aes(x = viscosity, y = wavelength)) +
+  stat_summary(fun.data = 'mean_cl_boot')
+```
+
+```{r}
+binwidth <- 0.02
+shapes <- c(15,16,17,25,23)
+```
+
+```{r}
+kinematicsdata |> 
+  rename(viscosity = viscosity.cP) |> 
+  filter(viscosity != 20) |> 
+  ggplot(aes(x = viscosity, y = wavelength.L)) +
+  geom_dots(aes(color = indiv, shape = indiv, fill = indiv),
+            group = NA,
+            position = 'dodge',
+            width = 0.6,
+            side = 'both',
+            binwidth = unit(binwidth, 'npc'),
+            layout = 'swarm',
+            show.legend = FALSE) +
+  stat_summary(data = simwavelen,
+             inherit.aes = FALSE,
+             aes(x = viscosity, y = wavelength), 
+             fun.data = 'mean_cl_boot',
+             color = 'black', size = 1) +
+  scale_shape_manual(values = shapes) +
+  scale_color_brewer(type = 'qual', palette = 'Set1')
+  
+```
+
