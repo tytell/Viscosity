@@ -1,0 +1,57 @@
+---
+title: "Plot Horner data"
+format: html
+editor: visual
+---
+
+```{r}
+library(tidyverse)
+```
+
+```{r}
+data <- tribble(
+  ~viscosity, ~dur, ~group, ~label,
+1.0145870346119994, 1.2007874015748032, 0, "mean",
+1.0145870346119994, 1.2755905511811023, 0, "upper",
+1.0145870346119994, 1.1220472440944882, 0, "lower",
+10.145870346119995, 0.8267716535433072, 1, "mean",
+10, 0.968503937007874, 1, "upper",
+10.145870346119995, 0.6850393700787402, 1, "lower",
+99.9999999999998, 0.6889763779527559, 2, "mean",
+99.9999999999998, 0.8307086614173229, 2, "upper",
+98.56226877395689, 0.5472440944881889, 2, "lower",
+1000, 0.515748031496063, 3, "mean",
+1000, 0.5984251968503937, 3, "upper",
+1000, 0.4251968503937009, 3, "lower"
+)
+```
+
+```{r}
+data <-
+  data |> 
+  select(-viscosity) |> 
+  pivot_wider(names_from = label, values_from = dur) |> 
+  mutate(viscosity = 10^group)
+```
+
+```{r}
+data <-
+  data |> 
+  mutate(freq = 1/mean,
+         freqlo = 1/upper,
+         freqhi = 1/lower)
+```
+
+```{r}
+ggplot(data, aes(x = viscosity, y = freq, color = log10(viscosity))) +
+  geom_pointrange(aes(ymin = freqlo, ymax = freqhi)) +
+  scale_x_log10() +
+  scale_color_viridis_b() +
+  labs(x = "Viscosity (cP)", y = "Frequency (Hz)") +
+  theme_bw() +
+  theme(legend.position = 'none')
+```
+
+```{r}
+ggsave('HornerFig.pdf', width = 3, height = 2, units = 'in')
+```
