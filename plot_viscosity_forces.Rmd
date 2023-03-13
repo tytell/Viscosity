@@ -67,9 +67,8 @@ rho <- 1000   # kg/m^3
 ```{r}
 forcedata <-
   kinematicsdata %>%
-  mutate(viscosity = fct_recode(viscosity.cP, '6' = '10'),
-         viscosity.cP = case_when(viscosity == '1'  ~  1,
-                                  viscosity == '6'  ~  6,
+  mutate(         viscosity.cP = case_when(viscosity == '1'  ~  1,
+                                  viscosity == '10'  ~  10,
                                   viscosity == '20'  ~  20)) %>%
   select(indiv, trial, viscosity, len.mm, viscosity.cP, peaktime.s, speed.mms,
          amp.Ls)
@@ -301,6 +300,12 @@ force_plot <-
 force_plot
 ```
 
+```{r}
+forcedata.bytrial |> 
+  group_by(viscosity) |> 
+  summarize(across(c(Re_tail, Cd), list(mn = ~mean(.x, na.rm = TRUE),
+                                        sd = ~sd(.x, na.rm = TRUE))))
+```
 
 ```{r}
 forcedata.long <-
@@ -314,13 +319,6 @@ forcedata.long %>%
   ggplot(aes(x = viscosity, y = value)) +
   geom_dots(layout = 'swarm', side='both') +
   facet_wrap(~ param, scales = 'free')
-```
-Get overall means and standard deviations
-```{r}
-kinematicsdata.long %>%
-  group_by(param, viscosity) %>%
-  summarize(mn = mean(value, na.rm = TRUE),
-            sd = sd(value, na.rm = TRUE))
 ```
 
 ```{r}
@@ -367,22 +365,8 @@ forcemeans <-
 forcemeans
 ```
 ```{r}
-Re_plot_stat <-
-  Re_plot +
-  geom_pointrange(data = filter(forcemeans, param == 'Re_body'),
-                  aes(x = viscosity, y = estimate, ymin = estimate - std.error, ymax = estimate + std.error),
-                  shape = 4, size = 0.5) +
-  geom_line(data = filter(forcemeans, param == 'Re_body'),
-                  aes(x = viscosity, y = estimate, group = 1)) +
-  stat_pvalue_manual(data = filter(forcestats, param == 'Re_body'),
-                     label = '{p.format}{p.adj.signif}',
-                     x.position = 'viscosity',
-                     y.position = 5.2)
-
-Re_plot_stat
+forcemeans |> 
+  
 ```
 
-```{r}
-ggsave('Re_plot.pdf', width = 2.17, height = 2)
-```
 
