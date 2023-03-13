@@ -1,0 +1,456 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r setup}
+library(tidyverse)
+library(ggdist)
+library(here)
+library(lubridate)
+library(patchwork)
+```
+
+
+```{r}
+source(here('hdf5dataset.R'))
+```
+
+
+```{r}
+coddata <- read_csv('Data/coddata.csv')  |> 
+  mutate(indiv = factor(indiv),
+         viscosity = factor(viscosity)) |>
+  select(-`...1`)
+```
+
+```{r}
+kinematicsdata <- read_hdf5('kinematicsdatabytrial.h5')
+```
+
+## Compare Luna's kinematics estimates to mine
+
+```{r}
+comparedata <-
+  coddata |>
+  filter(point == 1) |>
+  mutate(trial = paste(indiv, trial, sep='-')) |>
+  rename(viscosity.cP = viscosity) |>
+  left_join(kinematicsdata, by = c('indiv', 'trial', 'viscosity.cP'))
+
+head(comparedata)
+```
+
+```{r}
+comparedata |>
+  mutate(speed_L = speed / len.mm,
+         freq_L = peakfreq,
+         wavelength1_L = 1.0 / windingnum,
+         wavelength2_L = wavelength / len.mm) |> 
+  rename(speed_E = speed.Ls,
+         freq_E = freq.hz,
+         wavelength1_E = wavelength.L) |> 
+  mutate(wavelength2_E = wavelength1_E) |> 
+  select(indiv, trial, viscosity.cP,
+         ends_with("_L"), ends_with("_E")) |> 
+  pivot_longer(c(ends_with("_L"), ends_with("_E")),
+               names_to = c("var", ".value"),
+               names_sep = "_") |>
+  ggplot(aes(x = E, y = L, color = viscosity.cP)) +
+  geom_point() +
+  facet_wrap(~ var, scales = 'free') +
+  geom_abline(intercept = 0, slope = 1)
+```
+
+# Plot COD results
+
+```{r}
+cfdmodes <-
+  bind_rows(read_csv('Data/sim1xcod.csv'),
+          read_csv('Data/sim10xcod.csv')) |> 
+  mutate(viscosity = factor(viscosity)) |>
+  select(-`...1`) |> 
+  mutate(modereal = if_else(viscosity == 10 & mode == 1, -modereal, modereal),
+         modeimag = if_else(viscosity == 10 & mode == 1, -modeimag, modeimag))
+```
+
+```{r}
+data <-
+  coddata |>
+  mutate(trial = paste(indiv, trial, sep='-')) |>
+  left_join(kinematicsdata, by = c("indiv", "trial", "viscosity"="viscosity.cP"))
+```
+
+
+```{r}
+data |>
+  filter(mode == 1) |>
+  ggplot(aes(x = point, y = modereal, color = indiv)) +
+  geom_path(aes(group = ind)) +
+  facet_grid(viscosity ~ .)
+
+```
+
+## Normalize the mode amplitudes
+
+```{r}
+mode1_1mag <-
+  data |> 
+  group_by(indiv) |> 
+  filter(viscosity == "1" & mode == 1) |> 
+  summarize(mode1_1mag = sqrt(sum(modereal^2 + modeimag^2)))
+
+mode1_1mag
+```
+
+```{r}
+normdata <-
+  data |> 
+  left_join(mode1_1mag, by = "indiv") |> 
+  mutate(modereal = modereal / mode1_1mag,
+         modeimag = modeimag / mode1_1mag)
+```
+
+```{r}
+indivmeans <-
+  normdata |>
+  filter(mode == 1) |>
+  mutate(position = (point-1)/19) |>
+  group_by(viscosity, indiv, position) |>
+  summarize(across(c(modereal, modeimag), c(mn = ~ mean(.x, na.rm = TRUE), sd = ~ sd(.x, na.rm = TRUE))))
+
+viscositymeans <-
+  normdata |>
+  filter(mode == 1) |>
+  mutate(position = (point-1)/19) |>
+  group_by(viscosity, position, indiv) |>
+  summarize(across(c(modereal, modeimag), c(mn = ~ mean(.x, na.rm = TRUE), sd = ~ sd(.x, na.rm = TRUE)))) |>
+  summarize(across(c(modereal_mn, modeimag_mn), c(mn = ~ mean(.x, na.rm = TRUE), sd = ~ sd(.x, na.rm = TRUE))))
+```
+
+```{r}
+indivmeans |>
+  ggplot(aes(x = position, y = modereal_mn, color = indiv, fill = viscosity)) +
+  # geom_ribbon(aes(ymin = modereal_mn-modereal_sd, ymax = modereal_mn+modereal_sd), alpha = 0.5,
+  #             color = NA) +
+  geom_path(show.legend = FALSE) +
+  geom_ribbon(data = viscositymeans,
+              inherit.aes = FALSE,
+              aes(x = position, ymin = modereal_mn_mn - modereal_mn_sd,
+                  ymax = modereal_mn_mn + modereal_mn_sd),
+              color = NA, alpha = 0.5) +
+  geom_path(data = viscositymeans,
+            inherit.aes = FALSE,
+            aes(x = position, y = modereal_mn_mn), color = 'black') +
+  geom_path(data = cfdmodes |> 
+              filter(mode == 1) |> 
+              mutate(position = point/320),
+            inherit.aes = FALSE,
+            aes(x = position, y = modereal), color = 'black', linetype = 'dashed') +
+  scale_color_brewer(type = 'qual', palette = 'Set1') +
+  facet_grid(viscosity ~ .) +
+  labs(y = 'COD mode 1', x = 'Body position (L)') +
+  theme_light() +
+  theme(axis.line=element_blank(),#axis.text.x=element_blank(),
+          axis.text.y=element_blank(),#axis.ticks=element_blank(),
+          axis.title.x=element_blank(),
+          axis.title.y=element_blank(), legend.position = 'bottom',
+          panel.background=element_blank(),panel.border=element_blank(),panel.grid.major=element_blank(),
+          panel.grid.minor=element_blank(),plot.background=element_blank())
+  
+```
+
+```{r}
+ggsave('cod_plot.pdf', width = 3.5, height = 2)
+```
+
+```{r}
+binwidth <- 0.02
+shapes <- c(15,16,17,25,23)
+```
+
+```{r}
+cfdmodes |> 
+  distinct(wavelength, windingnum, traveling, .keep_all = TRUE)
+```
+
+```{r}
+p1 <- data |>
+  filter(mode == 1 & point == 20) |>
+  mutate(wavelength_tail_Luna = wavelength / len.mm) |>
+  ggplot(aes(x = viscosity, y = wavelength_tail_Luna)) +
+  geom_dots(aes(color = indiv, shape = indiv, fill = indiv),
+            group = NA,
+            position = 'dodge',
+            width = 0.6,
+            side = 'both',
+            binwidth = unit(binwidth, 'npc'),
+            layout = 'swarm',
+            show.legend = FALSE) +
+  geom_point(data = cfdmodes |> 
+               distinct(wavelength, .keep_all = TRUE),
+             inherit.aes = FALSE,
+             aes(x = viscosity, y = wavelength / (4*pi)), 
+             color = 'black', size = 5) +
+  scale_shape_manual(values = shapes) +
+  scale_color_brewer(type = 'qual', palette = 'Set1') +
+  #labs(y = 'Speed (L/s)', x = 'Viscosity (cP)') +
+  #expand_limits(y = 0) +
+  ylim(0.45, 1) +
+  theme_bw() +
+  theme(panel.border = element_blank(), axis.line = element_line())
+
+p2 <- data |>
+  filter(mode == 1 & point == 20) |>
+  # mutate(wavelength.L = wavelength / len.mm) |>
+  mutate(wavelength_winding_Luna = 1.0 / windingnum) |> 
+  ggplot(aes(x = viscosity, y = wavelength_winding_Luna)) +
+  geom_dots(aes(color = indiv, shape = indiv, fill = indiv),
+            group = NA,
+            position = 'dodge',
+            width = 0.6,
+            side = 'both',
+            binwidth = unit(binwidth, 'npc'),
+            layout = 'swarm',
+            show.legend = FALSE) +
+  geom_point(data = cfdmodes |> 
+               distinct(windingnum, .keep_all = TRUE),
+             inherit.aes = FALSE,
+             aes(x = viscosity, y = 1.0 / windingnum),
+             color = 'black', size = 5) +
+  scale_shape_manual(values = shapes) +
+  scale_color_brewer(type = 'qual', palette = 'Set1') +
+  #labs(y = 'Speed (L/s)', x = 'Viscosity (cP)') +
+  #expand_limits(y = 0) +
+  ylim(0.45, 1) +
+  theme_bw() +
+  theme(panel.border = element_blank(), axis.line = element_line())
+
+p3 <- data |>
+  filter(mode == 1 & point == 20) |>
+  # mutate(wavelength.L = wavelength / len.mm) |>
+  mutate(wavelength_Eric = wavelength.L) |> 
+  ggplot(aes(x = viscosity, y = wavelength.L)) +
+  geom_dots(aes(color = indiv, shape = indiv, fill = indiv),
+            group = NA,
+            position = 'dodge',
+            width = 0.6,
+            side = 'both',
+            binwidth = unit(binwidth, 'npc'),
+            layout = 'swarm',
+            show.legend = FALSE) +
+  geom_point(data = cfdmodes |> 
+               distinct(wavelength, .keep_all = TRUE),
+             inherit.aes = FALSE,
+             aes(x = viscosity, y = wavelength / (4*pi)), 
+             color = 'black', size = 5) +
+  scale_shape_manual(values = shapes) +
+  scale_color_brewer(type = 'qual', palette = 'Set1') +
+  #labs(y = 'Speed (L/s)', x = 'Viscosity (cP)') +
+  #expand_limits(y = 0) +
+  ylim(0.45, 1) +
+  theme_bw() +
+  theme(panel.border = element_blank(), axis.line = element_line())
+
+p1 + p2 + p3
+```
+
+```{r}
+data |>
+  filter(mode == 1 & point == 20) |>
+  ggplot(aes(x = viscosity, y = traveling)) +
+  geom_dots(aes(color = indiv, shape = indiv, fill = indiv),
+            group = NA,
+            position = 'dodge',
+            width = 0.6,
+            side = 'both',
+            binwidth = unit(binwidth, 'npc'),
+            layout = 'swarm',
+            show.legend = FALSE) +
+  scale_shape_manual(values = shapes) +
+  scale_color_brewer(type = 'qual', palette = 'Set1') +
+  #labs(y = 'Speed (L/s)', x = 'Viscosity (cP)') +
+  #expand_limits(y = 0) +
+  ylim(0.45, 1) +
+  theme_bw() +
+  theme(panel.border = element_blank(), axis.line = element_line())
+```
+
+# Compare CFD and live swimming data
+
+
+```{r}
+cfdmodes |> 
+  mutate(position = point / 321) |> 
+  filter(mode == 1) |> 
+  mutate(modereal = if_else(viscosity == 10, -modereal, modereal),
+         modeimag = if_else(viscosity == 10, -modeimag, modeimag)) |> 
+  ggplot(aes(x = position)) +
+  geom_path(aes(y = modereal), color = 'black') +
+  geom_path(aes(y = modeimag), color = 'black', linetype = 'dashed') +
+  geom_path(data = viscositymeans,
+            inherit.aes = FALSE,
+            aes(x = position, y = modereal_mn_mn/3, color = viscosity)) +
+  geom_path(data = viscositymeans,
+            inherit.aes = FALSE,
+            aes(x = position, y = modeimag_mn_mn/3, color = viscosity), 
+            linetype = 'dashed') +
+  facet_grid(viscosity ~ .)
+```
+
+```{r}
+interp_mode <- function(df, npt = 20) {
+  pt <- seq(1,20)
+  
+  i <- tibble(point = pt,
+              modereal = approx(df$point, df$modereal, xout = pt)$y,
+              modeimag = approx(df$point, df$modeimag, xout = pt)$y)
+  i
+}
+
+cfdmodes20 <-
+  cfdmodes |>
+  group_by(viscosity, mode) |> 
+  mutate(point = (point+1)/321 * 20) |> 
+  group_modify(~ interp_mode(.x)) |> 
+  mutate(cfdmode = complex(real=modereal, imaginary = modeimag))
+
+cfdmodes20
+```
+
+```{r}
+modemags <-
+  cfdmodes20 |> 
+  group_by(viscosity, mode) |> 
+  summarize(mag = sqrt(sum(cfdmode^2))) |> 
+  mutate(mag = Mod(mag))
+
+modemags
+```
+
+```{r}
+mode11mag <- modemags |> 
+  filter(viscosity == 1 & mode == 1) |> 
+  pull(mag)
+```
+
+```{r}
+cfdmodes20 <- cfdmodes20 |> 
+  mutate(cfdmode = cfdmode / mode11mag)
+```
+
+```{r}
+cfdmodes20 |> 
+  group_by(viscosity, mode) |> 
+  summarize(mag = sqrt(sum(cfdmode^2))) |> 
+  mutate(mag = Mod(mag))
+```
+
+```{r}
+kinematicsdata_all <- read_hdf5_old(here('midlines_all_kinematics.h5')) |>
+  mutate(date = as_date(date)) |>
+  mutate(wavespeed.mms = (snextseg - s)/(tpnextseg - tp)) |>
+  filter(!is.na(viscosity.cP)) |>
+  mutate(indiv = factor(indiv),
+         viscosity.cP = factor(viscosity.cP),
+         trial = interaction(indiv, trial, sep='-')) |> 
+  select(indiv, trial, bodyparts, filename, t,frame, xmm,ymm,
+         viscosity.cP, len.mm, comx,comy,
+         bodyaxisx, bodyaxisy, exc, swimvels) |>
+  mutate(xexc = (xmm - comx)*bodyaxisx + (ymm - comy)*bodyaxisy) |>
+  select(-xmm, -ymm)
+```
+
+```{r}
+kinematicsdata_all |> 
+  filter(trial == '5-12') |> 
+  ggplot(aes(x = xexc, y = exc, color = frame)) +
+  geom_path(aes(group = frame))
+  # ggplot(aes(x = xexc, y = exc, color = frame)) +
+  # geom_path()
+```
+
+```{r}
+cfdmodes20 |> 
+    filter(viscosity == '10' & mode == 1) |> 
+    pull(cfdmode)
+```
+
+```{r}
+project_on_cfd <- function(df, cfdmodes) {
+  mag <- sqrt(sum(df$exc^2))
+  
+  cfdmode1.1 <- cfdmodes |> 
+    filter(viscosity == '1' & mode == 1) |> 
+    pull(cfdmode)
+  
+  cfdmode10.1 <- cfdmodes |> 
+    filter(viscosity == '10' & mode == 1) |> 
+    pull(cfdmode)
+  
+  cfdmode1.2 <- 
+    cfdmodes |> 
+    filter(viscosity == '1' & mode == 2) |> 
+    pull(cfdmode)
+  
+  cfdmode10.2 <-
+    cfdmodes |> 
+    filter(viscosity == '10' & mode == 2) |> 
+    pull(cfdmode)
+    
+  data.frame(modeamp1.1 = sum(df$exc * cfdmode1.1) / mag,
+             modeamp10.1 = sum(df$exc * cfdmode10.1) / mag,
+             modeamp1.2 = sum(df$exc * cfdmode1.2) / mag,
+             modeamp10.2 = sum(df$exc * cfdmode10.2) / mag)
+}
+
+modeamps <-
+  kinematicsdata_all |> 
+  filter(trial %in% c('5-11', '5-12')) |> 
+  group_by(trial) |> 
+  mutate(exc = exc - mean(exc, na.rm = TRUE)) |> 
+  group_by(indiv, trial, viscosity.cP, len.mm, t, frame) |> 
+  group_modify(~ project_on_cfd(.x, cfdmodes20)) |> 
+  mutate(across(starts_with('modeamp'), list(mag = ~ Mod(.x)))) 
+
+modeamps |> 
+  group_by(trial) |> 
+  summarize(across(ends_with('_mag'), list(mn = ~ mean(.x, na.rm = TRUE))))
+
+modeamps |> 
+  ggplot(aes(x = t, y = modeamp1.1_mag, color = trial)) +
+  geom_path() +
+  geom_path(aes(y = modeamp10.1_mag), linetype = 'dashed')
+  # coord_equal()
+```
+
+```{r}
+cfdmode1.1 <- cfdmodes |> 
+  filter(viscosity == '1' & mode == 1) |> 
+  pull(cfdmode)
+
+cfdmode10.1 <- cfdmodes |> 
+  filter(viscosity == '10' & mode == 1) |> 
+  pull(cfdmode)
+
+Mod(sum(cfdmode10.1 * cfdmode1.1))
+```
+ 
+```{r}
+data |> 
+  left_join(cfdmodes20, by = c("mode", "point")) |> 
+  group_by(trial, mode) |> 
+  summarize(mag = sqrt(sum(modereal^2 + modeimag^2)),
+            cfdmag_1 = sqrt(sum(cfdmodereal_1^2 + cfdmodeimag_1^2)),
+            cfdmag_10 = sqrt(sum(cfdmodereal_10^2 + cfdmodeimag_10^2)),
+            d1real = sum(modereal*cfdmodereal_1 - modeimag*cfdmodeimag_1) /
+              (mag*cfdmag_1),
+            d1imag = sum(modereal*cfdmodeimag_1 + modeimag*cfdmodereal_1) /
+              (mag*cfdmag_1),
+            d10real = sum(modereal*cfdmodereal_10 - modeimag*cfdmodeimag_10) /
+              (mag*cfdmag_10),
+            d10imag = sum(modereal*cfdmodeimag_10 + modeimag*cfdmodereal_10) /
+              (mag*cfdmag_10))
+            
+```
+
