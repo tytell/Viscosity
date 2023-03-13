@@ -1,0 +1,175 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r setup}
+library(tidyverse)
+library(lubridate)
+library(ggdist)
+library(here)
+```
+
+```{r}
+source(here('process_midlines.R'))
+source(here('hdf5dataset.R'))
+```
+
+# Load the data
+
+Load in the processed kinematics data and update some of the variable names.  This includes frame-by-frame data for the entire body.
+
+```{r}
+kinematicsdata_all <- read_hdf5_old(here('midlines_all_kinematics.h5')) %>%
+  mutate(date = as_date(date)) %>%
+  mutate(wavespeed.mms = (snextseg - s)/(tpnextseg - tp)) %>%
+  filter(!is.na(viscosity.cP)) %>%
+  mutate(indiv = factor(indiv),
+         viscosity.cP = factor(viscosity.cP),
+         trial = interaction(indiv, trial, sep='-')) %>%
+  rename(freq.hz = freq,
+         wavelength.mm = wavelength,
+         amp.mm = amp,
+         speed.mms = swimvels)
+```
+
+```{r}
+simkinematics <- read_hdf5(here('simkinematics.h5'))
+```
+
+
+```{r}
+simkinematics |> 
+  filter(frame %% 10 == 0) |> 
+  ggplot(aes(x = xmm, y = ymm, color = trial)) +
+  geom_path(aes(group = frame)) +
+  facet_wrap(~ trial, ncol = 1, scales = 'free')
+```
+
+# Plot curvature
+
+```{r}
+extrial <- sample(levels(kinematicsdata_all$trial), 1)
+extrial
+
+kinematicsdata_all |> 
+  filter(trial == extrial) |> 
+  group_by(bodyparts) |> 
+  mutate(smn = mean(s, na.rm = TRUE)) |> 
+  ggplot(aes(x = smn, y = abs(curve), color = bodyparts)) +
+  stat_halfeye(scale = 2) +
+  ggtitle(extrial)
+```
+
+```{r}
+kinematicsdata_all |> 
+  filter(bodyparts == 20) |> 
+  ggplot(aes(x = viscosity.cP, y = s)) +
+  stat_halfeye() +
+  facet_wrap(~ indiv)
+```
+
+```{r}
+goodlen <-
+  kinematicsdata_all |> 
+  filter(viscosity.cP == 1) |> 
+  filter(bodyparts == 20) |> 
+  group_by(indiv) |> 
+  summarize(len0.mm = first(len.mm),
+    len.mm = mean(s, na.rm = TRUE),
+    ratio = len.mm / len0.mm)
+
+goodlen
+```
+
+```{r}
+kinematicsdata_all |> 
+  select(-len.mm) |> 
+  left_join(goodlen |> 
+              select(-ratio),
+            by = 'indiv')
+```
+```{r}
+even_s <- function(df, key, svar, val, sout = seq(0.1,0.9, by = 0.1)) {
+  svar <- enquo(svar)
+  val <- enquo(val)
+  
+  s0 <- df[[rlang::as_name(svar)]]
+  v0 <- df[[rlang::as_name(val)]]
+  
+  v1 <- spline(s0, v0, xout = sout)
+
+  tibble(!!svar := sout,
+         !!val := v1$y)
+}
+```
+
+```{r}
+kinematicsdata_all |> 
+  filter(trial == extrial & frame %in% c(50, 51)) |> 
+  group_by(frame) |> 
+  mutate(s = s / len.mm) |> 
+  group_modify(~ even_s(.x, .y, s, curve))
+  # even_s(head(.data, 1), s, curve)
+```
+
+```{r}
+curve_even <-
+  kinematicsdata_all |> 
+  group_by(indiv, viscosity.cP, trial, frame) |> 
+  mutate(s.L = s / len.mm) |> 
+  rename(curve.invL = curve) |> 
+  group_modify(~ even_s(.x, .y, s.L, curve.invL))
+
+```
+
+```{r}
+curve_even |> 
+  ggplot(aes(x = s.L, y = abs(curve.invL), color = viscosity.cP)) +
+  stat_halfeye(scale = 2) +
+  facet_grid(viscosity.cP ~ .) +
+  ylim(0,10)
+  
+```
+```{r}
+simcurve_even <-
+  simkinematics |> 
+  group_by(indiv, viscosity, trial, frame) |> 
+  mutate(s.L = s / len.mm) |> 
+  rename(curve.invL = curve) |> 
+  group_modify(~ even_s(.x, .y, s.L, curve.invL))
+
+```
+
+```{r}
+simcurve_even |> 
+  filter(s.L > 0.1) |> 
+  ggplot(aes(x = s.L, y = abs(curve.invL), color = viscosity)) +
+  stat_halfeye(scale = 2) +
+  facet_grid(viscosity ~ .)
+  # ylim(0,10)
+
+```
+```{r}
+allcurve_even <-
+  curve_even |> 
+  ungroup() |> 
+  mutate(viscosity = case_when(viscosity.cP == 1  ~  '1x',
+                               viscosity.cP == 10  ~  '10x',
+                               viscosity.cP == 20  ~  '20x')) |> 
+  select(-viscosity.cP) |> 
+  bind_rows(simcurve_even) |> 
+  mutate(issim = if_else(indiv == 'sim', 'sim', 'real'))
+```
+
+
+```{r}
+allcurve_even  |> 
+  filter(s.L > 0.1) |> 
+  ggplot(aes(x = s.L, y = abs(curve.invL), color = viscosity)) +
+  stat_halfeye(scale = 2) +
+  facet_grid(viscosity ~ issim) +
+  ylim(0,15)
+  
+```
+
